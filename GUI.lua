@@ -31,70 +31,113 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC — NetworkIsSleeping PostSimulation method
--- Source: Roous500 (peke) on Roblox DevForum, Oct 30 2025
---         (post was redacted but quoted by Roblox engineer
---          Khanovich before removal)
+-- DESYNC — Mechanism Constraint Replication Halt
+-- Source: DevForum bug report Feb 2024 by ThoughtSpinnr,
+--         confirmed still unfixed June 2024. Jan 2026 patch
+--         fixed a different code path (server→client forward),
+--         this targets the client→server physics sender.
 --
 -- How it works:
---   1. setfflag PhysicsSenderRate to a very high value.
---      This floods the physics send pipeline, overwhelming
---      the outgoing packet scheduler.
+--   Roblox's PhysicsSender decides whether to send a part's
+--   state based on whether it's part of a "clean" assembly.
+--   When a client-local mechanism constraint (Rope/Rod/Hinge)
+--   chains: AnchoredPart → UnanchoredPart → HRP,
+--   the engine's assembly root resolution gets confused and
+--   stops queuing HRP physics packets entirely.
 --
---   2. Inside PostSimulation (runs AFTER physics is stepped,
---      BEFORE packets are dispatched), we rapidly toggle
---      sethiddenproperty(HRP, "NetworkIsSleeping", true/false)
---      back and forth every frame.
+--   We use RopeConstraints with Length=10000 so the ropes
+--   don't physically restrict movement — the constraint
+--   configuration just needs to EXIST to trigger the bug.
 --
---   The toggling confuses the replication system:
---   - When sleeping=true  the engine skips sending position
---     to other clients (thinks part is stationary)
---   - When sleeping=false the engine queues a send — but the
---     inflated PhysicsSenderRate causes it to be dropped/
---     overwritten before dispatch
---   Net result: server still receives your CFrame (you stay
---   in sync with server), but other clients never get the
---   position update — they see a frozen ghost.
+--   Effect: YOU move freely, everyone else (including server)
+--   sees you frozen at the position where desync was enabled.
 --
---   We also pulse SetNetworkOwner(LocalPlayer) to keep
---   physics authority on us so movement stays smooth.
+--   Best for: games with client-side hit detection where
+--   being invisible = being unhittable.
 -- ============================================================
 local desyncOn = false
-local desyncConn = nil
-local sleepToggle = false
+local desyncParts = {}
+
+local function cleanDesyncParts()
+    for _, v in ipairs(desyncParts) do
+        pcall(function() v:Destroy() end)
+    end
+    desyncParts = {}
+end
 
 local function enableDesync()
-    -- Inflate the physics sender rate to overwhelm the queue
-    pcall(function()
-        setfflag("PhysicsSenderRate", "9999")
-    end)
-
-    -- Keep network ownership on us
+    cleanDesyncParts()
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
 
-    -- PostSimulation = after physics step, before packet send
-    desyncConn = RunService.PostSimulation:Connect(function()
-        if not desyncOn or not HRP or not HRP.Parent then return end
-        sleepToggle = not sleepToggle
-        pcall(function()
-            sethiddenproperty(HRP, "NetworkIsSleeping", sleepToggle)
-        end)
-    end)
+    -- Part A: anchored ghost anchor at current position
+    local partA = Instance.new("Part")
+    partA.Name = "_DSA"
+    partA.Size = Vector3.new(0.05, 0.05, 0.05)
+    partA.Anchored = true
+    partA.CanCollide = false
+    partA.CanTouch = false
+    partA.CanQuery = false
+    partA.Transparency = 1
+    partA.CFrame = HRP.CFrame
+    partA.Parent = workspace
+    table.insert(desyncParts, partA)
 
-    print("[Tsurla] Desync ON")
+    -- Part B: unanchored middle-man
+    local partB = Instance.new("Part")
+    partB.Name = "_DSB"
+    partB.Size = Vector3.new(0.05, 0.05, 0.05)
+    partB.Anchored = false
+    partB.CanCollide = false
+    partB.CanTouch = false
+    partB.CanQuery = false
+    partB.Transparency = 1
+    partB.CFrame = HRP.CFrame
+    partB.Parent = workspace
+    table.insert(desyncParts, partB)
+
+    -- Attachments
+    local attA = Instance.new("Attachment")
+    attA.Parent = partA
+    table.insert(desyncParts, attA)
+
+    local attB = Instance.new("Attachment")
+    attB.Parent = partB
+    table.insert(desyncParts, attB)
+
+    -- HRP gets its own attachment for the chain
+    local attHRP = Instance.new("Attachment")
+    attHRP.Name = "_DSAttach"
+    attHRP.Parent = HRP
+    table.insert(desyncParts, attHRP)
+
+    -- Mechanism constraint: A → B (RopeConstraint, length 10000)
+    -- Must be a mechanism type (Rope/Rod/Hinge) — NOT AlignPosition
+    local ropeAB = Instance.new("RopeConstraint")
+    ropeAB.Name = "_DSRAB"
+    ropeAB.Attachment0 = attA
+    ropeAB.Attachment1 = attB
+    ropeAB.Length = 10000
+    ropeAB.Parent = partA
+    table.insert(desyncParts, ropeAB)
+
+    -- Mechanism constraint: B → HRP (RopeConstraint, length 10000)
+    local ropeHRP = Instance.new("RopeConstraint")
+    ropeHRP.Name = "_DSRHRP"
+    ropeHRP.Attachment0 = attB
+    ropeHRP.Attachment1 = attHRP
+    ropeHRP.Length = 10000
+    ropeHRP.Parent = partB
+    table.insert(desyncParts, ropeHRP)
+
+    print("[Tsurla] Desync ON — constraint replication halt active")
 end
 
 local function disableDesync()
     desyncOn = false
-    if desyncConn then
-        desyncConn:Disconnect()
-        desyncConn = nil
-    end
-    -- Restore normal sender rate and wake the part
-    pcall(function()
-        setfflag("PhysicsSenderRate", "15")
-        sethiddenproperty(HRP, "NetworkIsSleeping", false)
-    end)
+    cleanDesyncParts()
+    -- Remove the HRP attachment we added
+    local a = HRP:FindFirstChild("_DSAttach")
+    if a then a:Destroy() end
     print("[Tsurla] Desync OFF")
 end
 
@@ -486,7 +529,7 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     AnimBtn.Image = loadImage("animOff")
 
     if desyncOn then
-        if desyncConn then desyncConn:Disconnect() desyncConn = nil end
+        cleanDesyncParts()
         task.wait(0.5)
         task.spawn(enableDesync)
     end

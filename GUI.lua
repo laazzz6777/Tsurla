@@ -1,6 +1,7 @@
 -- Tsurla Hub
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -30,37 +31,85 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC - NextGenReplicator method (confirmed working 2026)
+-- CHECK SETFFLAG SUPPORT
+-- ============================================================
+local hasFFlag = typeof(setfflag) == "function"
+if not hasFFlag then
+    warn("[Tsurla] setfflag not supported by this executor!")
+else
+    print("[Tsurla] setfflag supported!")
+end
+
+-- ============================================================
+-- DESYNC
+-- Goal: Server hitbox moves with you, other clients see you frozen
 --
--- How it works:
---   NextGenReplicatorEnabledWrite4 controls whether the server
---   forwards YOUR character position to OTHER clients.
+-- Method 1 (newer Roblox): NextGenReplicatorEnabledWrite4
+--   Breaks server→other clients replication pipeline only.
+--   Client→Server stays intact so server hitbox still moves.
 --
---   Setting False→True in quick succession breaks the
---   server-to-other-clients replication pipeline specifically.
+-- Method 2 (older Roblox): WorldStepMax
+--   setfflag("WorldStepMax","-99999999999999") then wait(1)
+--   then setfflag("WorldStepMax","-1")
+--   Corrupts physics step timing, breaks outgoing replication
+--   to other clients while server still receives position.
 --
---   Client→Server replication is UNAFFECTED:
---     - Your client still sends your real position to server
---     - Server hitbox moves freely with you as normal
---
---   Server→OtherClients replication is BROKEN:
---     - Other players see your character frozen/invisible
---     - They cannot see or hit you
---     - You can interact with the game normally (hitboxes, damage, etc)
---
---   On disable: set flag to False to restore normal replication
+-- Both methods together cover all Roblox versions.
 -- ============================================================
 local desyncOn = false
+local desyncConn = nil
 
 local function enableDesync()
-    -- Toggle False→True breaks the server→other clients pipeline
-    setfflag("NextGenReplicatorEnabledWrite4", "False")
-    setfflag("NextGenReplicatorEnabledWrite4", "True")
+    if not hasFFlag then
+        warn("[Tsurla] Cannot desync: setfflag not available")
+        return
+    end
+
+    -- Method 1: NextGenReplicator (2026 Roblox)
+    pcall(function()
+        setfflag("NextGenReplicatorEnabledWrite4", "False")
+        setfflag("NextGenReplicatorEnabledWrite4", "True")
+    end)
+
+    -- Method 2: WorldStepMax (older Roblox, backup)
+    pcall(function()
+        setfflag("WorldStepMax", "-99999999999999")
+    end)
+    task.wait(1)
+    pcall(function()
+        setfflag("WorldStepMax", "-1")
+    end)
+
+    -- Keep re-triggering NextGenReplicator every 2s to maintain desync
+    -- (some Roblox versions reset it automatically)
+    desyncConn = task.spawn(function()
+        while desyncOn do
+            pcall(function()
+                setfflag("NextGenReplicatorEnabledWrite4", "False")
+                setfflag("NextGenReplicatorEnabledWrite4", "True")
+            end)
+            task.wait(2)
+        end
+    end)
+
+    print("[Tsurla] Desync enabled")
 end
 
 local function disableDesync()
-    -- Setting False restores normal replication
-    setfflag("NextGenReplicatorEnabledWrite4", "False")
+    if not hasFFlag then return end
+    desyncOn = false
+
+    -- Restore NextGenReplicator
+    pcall(function()
+        setfflag("NextGenReplicatorEnabledWrite4", "False")
+    end)
+
+    -- Restore WorldStepMax
+    pcall(function()
+        setfflag("WorldStepMax", "0.1")
+    end)
+
+    print("[Tsurla] Desync disabled")
 end
 
 -- ============================================================
@@ -79,6 +128,7 @@ local function disableAnims()
     end
     animPlayedConn = Animator.AnimationPlayed:Connect(function(track)
         table.insert(savedTracks, {track = track, speed = track.Speed})
+        task.wait()
         track:AdjustSpeed(0)
     end)
 end
@@ -103,7 +153,6 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999
 ScreenGui.Parent = LocalPlayer.PlayerGui
 
--- Menu toggle (always visible)
 local MenuToggle = Instance.new("ImageButton")
 MenuToggle.Size = UDim2.new(0, 120, 0, 50)
 MenuToggle.Position = UDim2.new(0, 10, 0, 10)
@@ -113,7 +162,6 @@ MenuToggle.ScaleType = Enum.ScaleType.Fit
 MenuToggle.ZIndex = 20
 MenuToggle.Parent = ScreenGui
 
--- Main frame
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, 480, 0, 380)
 MainFrame.Position = UDim2.new(0.5, -240, 0.5, -190)
@@ -129,7 +177,6 @@ BgImg.ScaleType = Enum.ScaleType.Stretch
 BgImg.ZIndex = 1
 BgImg.Parent = MainFrame
 
--- Drag
 local dragging, dragInput, dragStart, startPos
 BgImg.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -151,7 +198,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Tab buttons
 local MainTabBtn = Instance.new("ImageButton")
 MainTabBtn.Size = UDim2.new(0, 155, 0, 58)
 MainTabBtn.Position = UDim2.new(0, 8, 0, 8)
@@ -170,9 +216,7 @@ OtherTabBtn.ScaleType = Enum.ScaleType.Fit
 OtherTabBtn.ZIndex = 5
 OtherTabBtn.Parent = MainFrame
 
--- ============================================================
--- MAIN SECTION (Desync + Anims)
--- ============================================================
+-- MAIN SECTION
 local MainSection = Instance.new("Frame")
 MainSection.Size = UDim2.new(1,-16,0,295)
 MainSection.Position = UDim2.new(0,8,0,72)
@@ -193,8 +237,8 @@ DesyncBtn.Parent = MainSection
 DesyncBtn.MouseButton1Click:Connect(function()
     desyncOn = not desyncOn
     if desyncOn then
-        enableDesync()
         DesyncBtn.Image = loadImage("desyncOn")
+        task.spawn(enableDesync)
     else
         disableDesync()
         DesyncBtn.Image = loadImage("desyncOff")
@@ -221,9 +265,7 @@ AnimBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ============================================================
--- OTHER SECTION (Walkspeed + Jumppower)
--- ============================================================
+-- OTHER SECTION
 local OtherSection = Instance.new("Frame")
 OtherSection.Size = UDim2.new(1,-16,0,295)
 OtherSection.Position = UDim2.new(0,8,0,72)
@@ -232,7 +274,6 @@ OtherSection.Visible = false
 OtherSection.ZIndex = 3
 OtherSection.Parent = MainFrame
 
--- Walkspeed
 local WsImg = Instance.new("ImageLabel")
 WsImg.Size = UDim2.new(0, 290, 0, 65)
 WsImg.Position = UDim2.new(0, 8, 0, 8)
@@ -269,7 +310,6 @@ WalkInput.FocusLost:Connect(function(e)
     if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
 end)
 
--- Jumppower
 local JpImg = Instance.new("ImageLabel")
 JpImg.Size = UDim2.new(0, 290, 0, 65)
 JpImg.Position = UDim2.new(0, 8, 0, 95)
@@ -306,9 +346,6 @@ JumpInput.FocusLost:Connect(function(e)
     if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
 end)
 
--- ============================================================
--- TAB SWITCH
--- ============================================================
 local function switchSection(sec)
     MainSection.Visible = sec == "main"
     OtherSection.Visible = sec == "other"
@@ -319,31 +356,21 @@ MainTabBtn.MouseButton1Click:Connect(function() switchSection("main") end)
 OtherTabBtn.MouseButton1Click:Connect(function() switchSection("other") end)
 switchSection("main")
 
--- Menu toggle
 local guiOpen = false
 MenuToggle.MouseButton1Click:Connect(function()
     guiOpen = not guiOpen
     MainFrame.Visible = guiOpen
 end)
 
--- Respawn
 LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
     HRP = c:WaitForChild("HumanoidRootPart")
-    WalkInput.Text = tostring(Humanoid.WalkSpeed)
-    JumpInput.Text = tostring(Humanoid.JumpPower)
-    -- Re-enable desync after respawn if it was on
-    if desyncOn then
-        task.wait(0.5)
-        enableDesync()
-    end
-    -- Reset anims state
     animsDisabled = false
     savedTracks = {}
     if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
     AnimBtn.Image = loadImage("animOff")
-    -- Reapply speed/jump
+    if desyncOn then task.spawn(enableDesync) end
     task.wait(0.1)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)
@@ -351,4 +378,4 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     if jp then Humanoid.JumpPower = jp end
 end)
 
-print("[Tsurla Hub] Loaded!")
+print("[Tsurla Hub] Loaded! setfflag supported: " .. tostring(hasFFlag))

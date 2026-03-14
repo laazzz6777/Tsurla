@@ -53,18 +53,11 @@ local function enableDesync()
 
     desyncConn = RunService.Stepped:Connect(function()
         if not desyncOn or not HRP or not HRP.Parent then return end
-        -- Step 1: grab real position BEFORE we freeze visuals
-        local realCF = HRP.CFrame
-
-        -- Step 2: push real CFrame to server replication
+        -- Push the frozen ghost CFrame to the server/other clients
+        -- via the hidden replication property ONLY.
+        -- We do NOT touch HRP.CFrame so the local player moves freely.
         pcall(function()
-            sethiddenproperty(HRP, "CFrame", realCF)
-        end)
-
-        -- Step 3: overwrite rendered CFrame with frozen ghost
-        -- so other clients never get the updated position
-        pcall(function()
-            HRP.CFrame = ghostCF
+            sethiddenproperty(HRP, "CFrame", ghostCF)
         end)
     end)
     print("[Tsurla] Desync ON")

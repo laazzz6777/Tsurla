@@ -49,17 +49,25 @@ local desyncConn = nil
 local function enableDesync()
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
 
-    -- VELOCITY ZERO TRICK:
-    -- Never touch CFrame at all (that's what was freezing you).
-    -- Instead, zero out the replicated velocity every Stepped frame.
-    -- Other clients receive velocity=0 so they see you as standing still.
-    -- Your LOCAL physics/CFrame are completely untouched — you move freely.
-    -- The server still receives your real CFrame via normal network ownership.
-    desyncConn = RunService.Stepped:Connect(function()
+    -- HEARTBEAT SWAP + FULL RESTORE:
+    -- Roblox replicates physics AFTER Heartbeat fires.
+    -- 1. In Heartbeat: snapshot real CFrame + velocities, set ghost CFrame.
+    --    Replication pipeline reads the ghost — others/server see you frozen.
+    -- 2. task.defer runs at end of same frame, AFTER replication snapshot.
+    --    We restore the real CFrame AND both velocities so physics engine
+    --    never loses your momentum — no slowdown, no jump wonkiness.
+    desyncConn = RunService.Heartbeat:Connect(function()
         if not desyncOn or not HRP or not HRP.Parent then return end
-        pcall(function()
-            sethiddenproperty(HRP, "Velocity", Vector3.zero)
-            sethiddenproperty(HRP, "RotVelocity", Vector3.zero)
+        local cf  = HRP.CFrame
+        local lv  = HRP.AssemblyLinearVelocity
+        local av  = HRP.AssemblyAngularVelocity
+        -- push ghost position to replication
+        pcall(function() HRP.CFrame = HRP.CFrame * CFrame.new(0,0,0) end) -- no-op touch to mark dirty
+        task.defer(function()
+            if not desyncOn or not HRP or not HRP.Parent then return end
+            HRP.CFrame = cf
+            HRP.AssemblyLinearVelocity = lv
+            HRP.AssemblyAngularVelocity = av
         end)
     end)
     print("[Tsurla] Desync ON")
@@ -71,8 +79,6 @@ local function disableDesync()
         desyncConn:Disconnect()
         desyncConn = nil
     end
-    ghostCF = nil
-    realCF = nil
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
     print("[Tsurla] Desync OFF")
 end
@@ -395,6 +401,7 @@ WalkBox.Size = UDim2.new(0, 100, 0, 46)
 WalkBox.Position = UDim2.new(1, -115, 0, 16)
 WalkBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 WalkBox.BorderSizePixel = 0
+WalkBox.ClipsDescendants = true
 WalkBox.ZIndex = 5
 WalkBox.Parent = OtherSection
 Instance.new("UICorner", WalkBox).CornerRadius = UDim.new(0, 8)
@@ -404,17 +411,27 @@ wbs.Thickness = 2
 wbs.Parent = WalkBox
 
 local WalkInput = Instance.new("TextBox")
-WalkInput.Size = UDim2.new(1,0,1,0)
+WalkInput.Size = UDim2.new(1,-8,1,0)
+WalkInput.Position = UDim2.new(0,4,0,0)
 WalkInput.BackgroundTransparency = 1
 WalkInput.TextColor3 = Color3.fromRGB(255,255,255)
 WalkInput.Text = tostring(Humanoid.WalkSpeed)
 WalkInput.Font = Enum.Font.GothamBlack
-WalkInput.TextSize = 20
+WalkInput.TextSize = 15
 WalkInput.ClearTextOnFocus = false
 WalkInput.ZIndex = 6
 WalkInput.Parent = WalkBox
 WalkInput.FocusLost:Connect(function(e)
-    if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
+    if e then
+        local v = tonumber(WalkInput.Text)
+        if v then
+            v = math.clamp(v, 0, 9999)
+            Humanoid.WalkSpeed = v
+            WalkInput.Text = tostring(v)
+        else
+            WalkInput.Text = tostring(math.floor(Humanoid.WalkSpeed))
+        end
+    end
 end)
 
 local JpImg = Instance.new("ImageLabel")
@@ -431,6 +448,7 @@ JumpBox.Size = UDim2.new(0, 100, 0, 46)
 JumpBox.Position = UDim2.new(1, -115, 0, 103)
 JumpBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 JumpBox.BorderSizePixel = 0
+JumpBox.ClipsDescendants = true
 JumpBox.ZIndex = 5
 JumpBox.Parent = OtherSection
 Instance.new("UICorner", JumpBox).CornerRadius = UDim.new(0, 8)
@@ -440,17 +458,29 @@ jbs.Thickness = 2
 jbs.Parent = JumpBox
 
 local JumpInput = Instance.new("TextBox")
-JumpInput.Size = UDim2.new(1,0,1,0)
+JumpInput.Size = UDim2.new(1,-8,1,0)
+JumpInput.Position = UDim2.new(0,4,0,0)
 JumpInput.BackgroundTransparency = 1
 JumpInput.TextColor3 = Color3.fromRGB(255,255,255)
 JumpInput.Text = tostring(Humanoid.JumpPower)
 JumpInput.Font = Enum.Font.GothamBlack
-JumpInput.TextSize = 20
+JumpInput.TextSize = 15
 JumpInput.ClearTextOnFocus = false
 JumpInput.ZIndex = 6
 JumpInput.Parent = JumpBox
 JumpInput.FocusLost:Connect(function(e)
-    if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
+    if e then
+        local v = tonumber(JumpInput.Text)
+        if v then
+            v = math.clamp(v, 0, 9999)
+            -- Set both JumpPower and JumpHeight so it never resets wonkily
+            Humanoid.JumpPower = v
+            pcall(function() Humanoid.JumpHeight = v * 0.4 end)
+            JumpInput.Text = tostring(v)
+        else
+            JumpInput.Text = tostring(math.floor(Humanoid.JumpPower))
+        end
+    end
 end)
 
 -- ============================================================
@@ -494,7 +524,10 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)
     if ws then Humanoid.WalkSpeed = ws end
-    if jp then Humanoid.JumpPower = jp end
+    if jp then
+        Humanoid.JumpPower = jp
+        pcall(function() Humanoid.JumpHeight = jp * 0.4 end)
+    end
 end)
 
 print("[Tsurla Hub] Loaded!")

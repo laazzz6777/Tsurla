@@ -1,4 +1,4 @@
--- Tsurla Hub - Full Functionality
+-- Tsurla Hub
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -19,9 +19,9 @@ local function loadImage(name)
     loadedImages[name] = ok and result or ""
     return loadedImages[name]
 end
-
-local imageNames = {"background","main","menu","walkspeed","jumppower","other","desyncOn","desyncOff","animOn","animOff"}
-for _, n in ipairs(imageNames) do task.spawn(function() loadImage(n) end) end
+for _, n in ipairs({"background","main","menu","walkspeed","jumppower","other","desyncOn","desyncOff","animOn","animOff"}) do
+    task.spawn(function() loadImage(n) end)
+end
 task.wait(2.5)
 
 pcall(function()
@@ -31,90 +31,72 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC FUNCTIONALITY
--- The exploit manipulates WorldStepMax FFlag:
--- Server still receives your position updates (hitbox moves)
--- But replication to other clients is broken (you're invisible)
--- Your client visual stays where it was when you triggered it
+-- DESYNC
+-- How it works:
+--   setfflag("WorldStepMax", "-99999999999999") corrupts the
+--   physics timestep. This causes Roblox's networking layer to
+--   stop replicating your position to OTHER clients.
+--   The server STILL receives your position (hitbox moves freely).
+--   Other players see you frozen at the position you were at
+--   when desync was triggered. You are invisible + invincible.
+--   setfflag("WorldStepMax", "-1") locks it in that broken state.
+--   On disable: reset flag to "0" to restore normal replication.
 -- ============================================================
 local desyncOn = false
-local desyncConnection = nil
-local frozenCFrame = nil
 
 local function enableDesync()
-    -- Freeze client visual in place
-    frozenCFrame = HRP.CFrame
-    -- Manipulate physics step flag - breaks client->other client replication
-    -- Server still sees you moving (hitbox follows real movement)
-    pcall(function() setfflag("WorldStepMax", "-99999999999999") end)
-    task.wait(0.1)
-    pcall(function() setfflag("WorldStepMax", "-1") end)
-    -- Also try NextGenReplicator method (newer Roblox versions)
+    -- Step 1: Slam the physics timestep to a huge negative
+    setfflag("WorldStepMax", "-99999999999999")
+    -- Step 2: Wait for the broken state to propagate
+    task.wait(1)
+    -- Step 3: Set to -1 to lock the desync in permanently
+    setfflag("WorldStepMax", "-1")
+    -- Step 4: Also kill NextGenReplicator write if available (newer Roblox)
     pcall(function()
         setfflag("NextGenReplicatorEnabledWrite4", "False")
         task.wait(0.05)
         setfflag("NextGenReplicatorEnabledWrite4", "True")
     end)
-    -- Keep client visual frozen via RenderStepped (only cosmetic on client)
-    desyncConnection = RunService.RenderStepped:Connect(function()
-        if frozenCFrame and HRP and HRP.Parent then
-            -- Anchor client rendering position only
-            -- The actual physics/server position still updates normally
-            local currentCF = HRP.CFrame
-            -- We don't touch HRP directly so server still gets real position
-            -- The flag manipulation already handles the desync
-        end
-    end)
 end
 
 local function disableDesync()
-    -- Restore normal replication
-    pcall(function() setfflag("WorldStepMax", "0") end)
+    -- Restore normal physics replication
+    setfflag("WorldStepMax", "0")
     pcall(function()
         setfflag("NextGenReplicatorEnabledWrite4", "False")
     end)
-    if desyncConnection then
-        desyncConnection:Disconnect()
-        desyncConnection = nil
-    end
-    frozenCFrame = nil
 end
 
 -- ============================================================
 -- DISABLE CHARACTER ANIMATIONS
--- Stops all currently playing and future animation tracks
+-- Stops every playing track and hooks AnimationPlayed to stop
+-- any new ones immediately. Restores on toggle off.
 -- ============================================================
 local animsDisabled = false
 local savedTracks = {}
-local animConnection = nil
+local animPlayedConn = nil
 
 local function disableAnims()
     local Animator = Humanoid:FindFirstChildOfClass("Animator")
-    if Animator then
-        -- Stop all currently playing tracks
-        for _, track in ipairs(Animator:GetPlayingAnimationTracks()) do
-            table.insert(savedTracks, {track = track, speed = track.Speed, timePos = track.TimePosition})
-            track:AdjustSpeed(0)
-        end
-        -- Also stop any new tracks that start playing
-        animConnection = Animator.AnimationPlayed:Connect(function(track)
-            table.insert(savedTracks, {track = track, speed = track.Speed, timePos = 0})
-            track:AdjustSpeed(0)
-        end)
+    if not Animator then return end
+    for _, track in ipairs(Animator:GetPlayingAnimationTracks()) do
+        table.insert(savedTracks, {track = track, speed = track.Speed})
+        track:AdjustSpeed(0)
     end
+    animPlayedConn = Animator.AnimationPlayed:Connect(function(track)
+        table.insert(savedTracks, {track = track, speed = track.Speed})
+        track:AdjustSpeed(0)
+    end)
 end
 
 local function enableAnims()
-    -- Restore all saved tracks
-    for _, saved in ipairs(savedTracks) do
-        pcall(function()
-            saved.track:AdjustSpeed(saved.speed)
-        end)
+    for _, s in ipairs(savedTracks) do
+        pcall(function() s.track:AdjustSpeed(s.speed) end)
     end
     savedTracks = {}
-    if animConnection then
-        animConnection:Disconnect()
-        animConnection = nil
+    if animPlayedConn then
+        animPlayedConn:Disconnect()
+        animPlayedConn = nil
     end
 end
 
@@ -145,9 +127,8 @@ MainFrame.BackgroundTransparency = 1
 MainFrame.Visible = false
 MainFrame.Parent = ScreenGui
 
--- Background
 local BgImg = Instance.new("ImageLabel")
-BgImg.Size = UDim2.new(1,0,1,0)
+BgImg.Size = UDim2.new(1, 0, 1, 0)
 BgImg.BackgroundTransparency = 1
 BgImg.Image = loadImage("background")
 BgImg.ScaleType = Enum.ScaleType.Stretch
@@ -196,7 +177,7 @@ OtherTabBtn.ZIndex = 5
 OtherTabBtn.Parent = MainFrame
 
 -- ============================================================
--- MAIN SECTION (Desync + Disable Anims)
+-- MAIN SECTION
 -- ============================================================
 local MainSection = Instance.new("Frame")
 MainSection.Size = UDim2.new(1,-16,0,295)
@@ -206,7 +187,6 @@ MainSection.Visible = true
 MainSection.ZIndex = 3
 MainSection.Parent = MainFrame
 
--- Desync button (pure image)
 local DesyncBtn = Instance.new("ImageButton")
 DesyncBtn.Size = UDim2.new(0, 430, 0, 75)
 DesyncBtn.Position = UDim2.new(0, 8, 0, 8)
@@ -218,16 +198,18 @@ DesyncBtn.Parent = MainSection
 
 DesyncBtn.MouseButton1Click:Connect(function()
     desyncOn = not desyncOn
+    DesyncBtn.Active = false -- prevent spam clicking during wait
     if desyncOn then
-        enableDesync()
         DesyncBtn.Image = loadImage("desyncOn")
+        task.spawn(enableDesync)
     else
-        disableDesync()
         DesyncBtn.Image = loadImage("desyncOff")
+        disableDesync()
     end
+    task.wait(1.2)
+    DesyncBtn.Active = true
 end)
 
--- Disable anims button (pure image)
 local AnimBtn = Instance.new("ImageButton")
 AnimBtn.Size = UDim2.new(0, 430, 0, 90)
 AnimBtn.Position = UDim2.new(0, 8, 0, 98)
@@ -249,7 +231,7 @@ AnimBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ============================================================
--- OTHER SECTION (Walkspeed + Jumppower)
+-- OTHER SECTION
 -- ============================================================
 local OtherSection = Instance.new("Frame")
 OtherSection.Size = UDim2.new(1,-16,0,295)
@@ -259,7 +241,7 @@ OtherSection.Visible = false
 OtherSection.ZIndex = 3
 OtherSection.Parent = MainFrame
 
--- Walkspeed image
+-- Walkspeed
 local WsImg = Instance.new("ImageLabel")
 WsImg.Size = UDim2.new(0, 290, 0, 65)
 WsImg.Position = UDim2.new(0, 8, 0, 8)
@@ -269,7 +251,6 @@ WsImg.ScaleType = Enum.ScaleType.Fit
 WsImg.ZIndex = 5
 WsImg.Parent = OtherSection
 
--- Walkspeed input box (square with stroke)
 local WalkBox = Instance.new("Frame")
 WalkBox.Size = UDim2.new(0, 100, 0, 46)
 WalkBox.Position = UDim2.new(1, -115, 0, 16)
@@ -277,16 +258,16 @@ WalkBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 WalkBox.BorderSizePixel = 0
 WalkBox.ZIndex = 5
 WalkBox.Parent = OtherSection
-local WalkBoxStroke = Instance.new("UIStroke")
-WalkBoxStroke.Color = Color3.fromRGB(150, 155, 210)
-WalkBoxStroke.Thickness = 2
-WalkBoxStroke.Parent = WalkBox
 Instance.new("UICorner", WalkBox).CornerRadius = UDim.new(0, 8)
+local wbs = Instance.new("UIStroke")
+wbs.Color = Color3.fromRGB(150, 155, 210)
+wbs.Thickness = 2
+wbs.Parent = WalkBox
 
 local WalkInput = Instance.new("TextBox")
 WalkInput.Size = UDim2.new(1,0,1,0)
 WalkInput.BackgroundTransparency = 1
-WalkInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkInput.TextColor3 = Color3.fromRGB(255,255,255)
 WalkInput.Text = tostring(Humanoid.WalkSpeed)
 WalkInput.Font = Enum.Font.GothamBlack
 WalkInput.TextSize = 20
@@ -294,16 +275,10 @@ WalkInput.ClearTextOnFocus = false
 WalkInput.ZIndex = 6
 WalkInput.Parent = WalkBox
 WalkInput.FocusLost:Connect(function(e)
-    if e then
-        local v = tonumber(WalkInput.Text)
-        if v then
-            Humanoid.WalkSpeed = v
-            WalkInput.Text = tostring(v)
-        end
-    end
+    if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
 end)
 
--- Jumppower image
+-- Jumppower
 local JpImg = Instance.new("ImageLabel")
 JpImg.Size = UDim2.new(0, 290, 0, 65)
 JpImg.Position = UDim2.new(0, 8, 0, 95)
@@ -313,7 +288,6 @@ JpImg.ScaleType = Enum.ScaleType.Fit
 JpImg.ZIndex = 5
 JpImg.Parent = OtherSection
 
--- Jumppower input box (square with stroke)
 local JumpBox = Instance.new("Frame")
 JumpBox.Size = UDim2.new(0, 100, 0, 46)
 JumpBox.Position = UDim2.new(1, -115, 0, 103)
@@ -321,16 +295,16 @@ JumpBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 JumpBox.BorderSizePixel = 0
 JumpBox.ZIndex = 5
 JumpBox.Parent = OtherSection
-local JumpBoxStroke = Instance.new("UIStroke")
-JumpBoxStroke.Color = Color3.fromRGB(150, 155, 210)
-JumpBoxStroke.Thickness = 2
-JumpBoxStroke.Parent = JumpBox
 Instance.new("UICorner", JumpBox).CornerRadius = UDim.new(0, 8)
+local jbs = Instance.new("UIStroke")
+jbs.Color = Color3.fromRGB(150, 155, 210)
+jbs.Thickness = 2
+jbs.Parent = JumpBox
 
 local JumpInput = Instance.new("TextBox")
 JumpInput.Size = UDim2.new(1,0,1,0)
 JumpInput.BackgroundTransparency = 1
-JumpInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+JumpInput.TextColor3 = Color3.fromRGB(255,255,255)
 JumpInput.Text = tostring(Humanoid.JumpPower)
 JumpInput.Font = Enum.Font.GothamBlack
 JumpInput.TextSize = 20
@@ -338,13 +312,7 @@ JumpInput.ClearTextOnFocus = false
 JumpInput.ZIndex = 6
 JumpInput.Parent = JumpBox
 JumpInput.FocusLost:Connect(function(e)
-    if e then
-        local v = tonumber(JumpInput.Text)
-        if v then
-            Humanoid.JumpPower = v
-            JumpInput.Text = tostring(v)
-        end
-    end
+    if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
 end)
 
 -- ============================================================
@@ -360,34 +328,26 @@ MainTabBtn.MouseButton1Click:Connect(function() switchSection("main") end)
 OtherTabBtn.MouseButton1Click:Connect(function() switchSection("other") end)
 switchSection("main")
 
--- ============================================================
--- MENU TOGGLE
--- ============================================================
+-- Menu toggle
 local guiOpen = false
 MenuToggle.MouseButton1Click:Connect(function()
     guiOpen = not guiOpen
     MainFrame.Visible = guiOpen
 end)
 
--- ============================================================
--- RESPAWN HANDLER
--- ============================================================
+-- Respawn
 LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
     HRP = c:WaitForChild("HumanoidRootPart")
     WalkInput.Text = tostring(Humanoid.WalkSpeed)
     JumpInput.Text = tostring(Humanoid.JumpPower)
-    -- Reset states
     desyncOn = false
     animsDisabled = false
     savedTracks = {}
-    frozenCFrame = nil
-    if desyncConnection then desyncConnection:Disconnect() desyncConnection = nil end
-    if animConnection then animConnection:Disconnect() animConnection = nil end
+    if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
     DesyncBtn.Image = loadImage("desyncOff")
     AnimBtn.Image = loadImage("animOff")
-    -- Reapply walkspeed/jumppower after respawn
     task.wait(0.1)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)

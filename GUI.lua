@@ -2,7 +2,6 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -32,44 +31,56 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC (FIXED)
--- 1. Snapshot a "ghost" CFrame the moment desync is enabled.
--- 2. Every Stepped frame we:
---      a. Read the REAL HRP CFrame before Roblox touches it.
---      b. Force-write it back with sethiddenproperty so the
---         server replication pipeline picks up the true position.
---      c. Immediately overwrite the visible CFrame with the
---         frozen ghost so OTHER clients see you standing still.
--- Net result: server hitbox tracks your real movement,
--- everyone else sees a frozen ghost.
+-- DESYNC — NetworkIsSleeping PostSimulation method
+-- Source: Roous500 (peke) on Roblox DevForum, Oct 30 2025
+--         (post was redacted but quoted by Roblox engineer
+--          Khanovich before removal)
+--
+-- How it works:
+--   1. setfflag PhysicsSenderRate to a very high value.
+--      This floods the physics send pipeline, overwhelming
+--      the outgoing packet scheduler.
+--
+--   2. Inside PostSimulation (runs AFTER physics is stepped,
+--      BEFORE packets are dispatched), we rapidly toggle
+--      sethiddenproperty(HRP, "NetworkIsSleeping", true/false)
+--      back and forth every frame.
+--
+--   The toggling confuses the replication system:
+--   - When sleeping=true  the engine skips sending position
+--     to other clients (thinks part is stationary)
+--   - When sleeping=false the engine queues a send — but the
+--     inflated PhysicsSenderRate causes it to be dropped/
+--     overwritten before dispatch
+--   Net result: server still receives your CFrame (you stay
+--   in sync with server), but other clients never get the
+--   position update — they see a frozen ghost.
+--
+--   We also pulse SetNetworkOwner(LocalPlayer) to keep
+--   physics authority on us so movement stays smooth.
 -- ============================================================
 local desyncOn = false
 local desyncConn = nil
+local sleepToggle = false
 
 local function enableDesync()
+    -- Inflate the physics sender rate to overwhelm the queue
+    pcall(function()
+        setfflag("PhysicsSenderRate", "9999")
+    end)
+
+    -- Keep network ownership on us
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
 
-    -- HEARTBEAT SWAP + FULL RESTORE:
-    -- Roblox replicates physics AFTER Heartbeat fires.
-    -- 1. In Heartbeat: snapshot real CFrame + velocities, set ghost CFrame.
-    --    Replication pipeline reads the ghost — others/server see you frozen.
-    -- 2. task.defer runs at end of same frame, AFTER replication snapshot.
-    --    We restore the real CFrame AND both velocities so physics engine
-    --    never loses your momentum — no slowdown, no jump wonkiness.
-    desyncConn = RunService.Heartbeat:Connect(function()
+    -- PostSimulation = after physics step, before packet send
+    desyncConn = RunService.PostSimulation:Connect(function()
         if not desyncOn or not HRP or not HRP.Parent then return end
-        local cf  = HRP.CFrame
-        local lv  = HRP.AssemblyLinearVelocity
-        local av  = HRP.AssemblyAngularVelocity
-        -- push ghost position to replication
-        pcall(function() HRP.CFrame = HRP.CFrame * CFrame.new(0,0,0) end) -- no-op touch to mark dirty
-        task.defer(function()
-            if not desyncOn or not HRP or not HRP.Parent then return end
-            HRP.CFrame = cf
-            HRP.AssemblyLinearVelocity = lv
-            HRP.AssemblyAngularVelocity = av
+        sleepToggle = not sleepToggle
+        pcall(function()
+            sethiddenproperty(HRP, "NetworkIsSleeping", sleepToggle)
         end)
     end)
+
     print("[Tsurla] Desync ON")
 end
 
@@ -79,16 +90,17 @@ local function disableDesync()
         desyncConn:Disconnect()
         desyncConn = nil
     end
-    pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
+    -- Restore normal sender rate and wake the part
+    pcall(function()
+        setfflag("PhysicsSenderRate", "15")
+        sethiddenproperty(HRP, "NetworkIsSleeping", false)
+    end)
     print("[Tsurla] Desync OFF")
 end
 
 -- ============================================================
--- DISABLE CHARACTER ANIMATIONS (FIXED)
--- RunService.Stepped loop calls :Stop(0) on EVERY playing
--- track every frame. New tracks spawned mid-frame are caught
--- on the very next step. Completely persistent — no animation
--- can survive while the toggle is active.
+-- DISABLE ANIMATIONS
+-- Stepped loop calls Stop(0) every frame — nothing can play.
 -- ============================================================
 local animsDisabled = false
 local animConn = nil
@@ -110,7 +122,6 @@ local function enableAnims()
         animConn:Disconnect()
         animConn = nil
     end
-    -- Re-toggle the Animate script to restore default animations
     local animScript = Character:FindFirstChild("Animate")
     if animScript then
         animScript.Disabled = true
@@ -120,12 +131,11 @@ local function enableAnims()
 end
 
 -- ============================================================
--- ANTICHEAT BYPASS (IMPROVED)
--- Multi-layer approach:
---   1. Keyword scan  – destroy matching LocalScripts/Modules
---   2. RemoteEvent hooks – swallow :FireServer on AC remotes
---   3. __namecall hook – intercept Kick / Teleport calls
---   4. RunService scan loop – catches AC scripts added later
+-- ANTICHEAT BYPASS
+-- Layer 1: keyword scan + destroy matching scripts
+-- Layer 2: hook FireServer on AC remotes
+-- Layer 3: __namecall hook — block Kick / Teleport
+-- Layer 4: background rescan every 5s
 -- ============================================================
 local acKeywords = {
     "anticheat","anti_cheat","anti-cheat","fairplay",
@@ -186,13 +196,9 @@ local function tryDisableAnticheats()
         game:GetService("ReplicatedStorage"),
         workspace,
     }
-
-    -- Layer 1: initial scan
     for _, c in ipairs(containers) do
         pcall(function() scanAndDestroy(c) end)
     end
-
-    -- Layer 2: __namecall hook — block Kick and suspicious Teleports
     pcall(function()
         local mt = getrawmetatable(game)
         local oldNamecall = mt.__namecall
@@ -200,19 +206,17 @@ local function tryDisableAnticheats()
         mt.__namecall = function(self, ...)
             local method = getnamecallmethod()
             if method == "Kick" and self == LocalPlayer then
-                warn("[Tsurla AC] Blocked Kick attempt")
+                warn("[Tsurla AC] Blocked Kick")
                 return
             end
             if method == "TeleportToPlaceInstance" or method == "Teleport" then
-                warn("[Tsurla AC] Blocked Teleport attempt")
+                warn("[Tsurla AC] Blocked Teleport")
                 return
             end
             return oldNamecall(self, ...)
         end
         setreadonly(mt, true)
     end)
-
-    -- Layer 3: continuous background scan every 5s
     if acScanLoop then task.cancel(acScanLoop) end
     acScanLoop = task.spawn(function()
         while true do
@@ -222,7 +226,6 @@ local function tryDisableAnticheats()
             end
         end
     end)
-
     print("[Tsurla AC] All layers active")
 end
 
@@ -298,9 +301,7 @@ OtherTabBtn.ScaleType = Enum.ScaleType.Fit
 OtherTabBtn.ZIndex = 5
 OtherTabBtn.Parent = MainFrame
 
--- ============================================================
 -- MAIN SECTION
--- ============================================================
 local MainSection = Instance.new("Frame")
 MainSection.Size = UDim2.new(1,-16,0,330)
 MainSection.Position = UDim2.new(0,8,0,72)
@@ -376,9 +377,7 @@ ACBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
--- ============================================================
 -- OTHER SECTION
--- ============================================================
 local OtherSection = Instance.new("Frame")
 OtherSection.Size = UDim2.new(1,-16,0,330)
 OtherSection.Position = UDim2.new(0,8,0,72)
@@ -401,7 +400,6 @@ WalkBox.Size = UDim2.new(0, 100, 0, 46)
 WalkBox.Position = UDim2.new(1, -115, 0, 16)
 WalkBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 WalkBox.BorderSizePixel = 0
-WalkBox.ClipsDescendants = true
 WalkBox.ZIndex = 5
 WalkBox.Parent = OtherSection
 Instance.new("UICorner", WalkBox).CornerRadius = UDim.new(0, 8)
@@ -411,27 +409,17 @@ wbs.Thickness = 2
 wbs.Parent = WalkBox
 
 local WalkInput = Instance.new("TextBox")
-WalkInput.Size = UDim2.new(1,-8,1,0)
-WalkInput.Position = UDim2.new(0,4,0,0)
+WalkInput.Size = UDim2.new(1,0,1,0)
 WalkInput.BackgroundTransparency = 1
 WalkInput.TextColor3 = Color3.fromRGB(255,255,255)
 WalkInput.Text = tostring(Humanoid.WalkSpeed)
 WalkInput.Font = Enum.Font.GothamBlack
-WalkInput.TextSize = 15
+WalkInput.TextSize = 20
 WalkInput.ClearTextOnFocus = false
 WalkInput.ZIndex = 6
 WalkInput.Parent = WalkBox
 WalkInput.FocusLost:Connect(function(e)
-    if e then
-        local v = tonumber(WalkInput.Text)
-        if v then
-            v = math.clamp(v, 0, 9999)
-            Humanoid.WalkSpeed = v
-            WalkInput.Text = tostring(v)
-        else
-            WalkInput.Text = tostring(math.floor(Humanoid.WalkSpeed))
-        end
-    end
+    if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
 end)
 
 local JpImg = Instance.new("ImageLabel")
@@ -448,7 +436,6 @@ JumpBox.Size = UDim2.new(0, 100, 0, 46)
 JumpBox.Position = UDim2.new(1, -115, 0, 103)
 JumpBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
 JumpBox.BorderSizePixel = 0
-JumpBox.ClipsDescendants = true
 JumpBox.ZIndex = 5
 JumpBox.Parent = OtherSection
 Instance.new("UICorner", JumpBox).CornerRadius = UDim.new(0, 8)
@@ -458,34 +445,20 @@ jbs.Thickness = 2
 jbs.Parent = JumpBox
 
 local JumpInput = Instance.new("TextBox")
-JumpInput.Size = UDim2.new(1,-8,1,0)
-JumpInput.Position = UDim2.new(0,4,0,0)
+JumpInput.Size = UDim2.new(1,0,1,0)
 JumpInput.BackgroundTransparency = 1
 JumpInput.TextColor3 = Color3.fromRGB(255,255,255)
 JumpInput.Text = tostring(Humanoid.JumpPower)
 JumpInput.Font = Enum.Font.GothamBlack
-JumpInput.TextSize = 15
+JumpInput.TextSize = 20
 JumpInput.ClearTextOnFocus = false
 JumpInput.ZIndex = 6
 JumpInput.Parent = JumpBox
 JumpInput.FocusLost:Connect(function(e)
-    if e then
-        local v = tonumber(JumpInput.Text)
-        if v then
-            v = math.clamp(v, 0, 9999)
-            -- Set both JumpPower and JumpHeight so it never resets wonkily
-            Humanoid.JumpPower = v
-            pcall(function() Humanoid.JumpHeight = v * 0.4 end)
-            JumpInput.Text = tostring(v)
-        else
-            JumpInput.Text = tostring(math.floor(Humanoid.JumpPower))
-        end
-    end
+    if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
 end)
 
--- ============================================================
 -- TAB SWITCH
--- ============================================================
 local function switchSection(sec)
     MainSection.Visible = sec == "main"
     OtherSection.Visible = sec == "other"
@@ -502,9 +475,7 @@ MenuToggle.MouseButton1Click:Connect(function()
     MainFrame.Visible = guiOpen
 end)
 
--- ============================================================
--- CHARACTER RESPAWN HANDLER
--- ============================================================
+-- RESPAWN HANDLER
 LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
@@ -524,10 +495,7 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)
     if ws then Humanoid.WalkSpeed = ws end
-    if jp then
-        Humanoid.JumpPower = jp
-        pcall(function() Humanoid.JumpHeight = jp * 0.4 end)
-    end
+    if jp then Humanoid.JumpPower = jp end
 end)
 
 print("[Tsurla Hub] Loaded!")

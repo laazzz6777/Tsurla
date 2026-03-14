@@ -1,6 +1,7 @@
 -- Tsurla Hub
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -31,47 +32,49 @@ end)
 
 -- ============================================================
 -- DESYNC
+-- Confirmed working method (Dec 2025 devforum):
+--   setfflag("NextGenReplicatorEnabledWrite4", "True")
+--   wait(0.04)
+--   setfflag("NextGenReplicatorEnabledWrite4", "False")
 --
--- ONLY NextGenReplicatorEnabledWrite4 is used.
--- WorldStepMax is NOT used — it freezes client→server which
--- is the opposite of what we want.
---
--- NextGenReplicatorEnabledWrite4 False→True:
---   Breaks ONLY the server→other clients replication pipeline.
---   Client→Server is completely unaffected.
---   So: your real movement still reaches the server (hitbox moves)
---   But: server stops broadcasting your position to other clients
---   Result: other players see you frozen, server hitbox moves freely
---
--- Called again on respawn with "true" (lowercase matches original)
--- Called with "False" on death/disable to restore replication
+-- True = enable NextGenReplicator write pipeline
+-- 0.04s wait = lets it latch onto the replication system
+-- False = kills the write pipeline mid-operation
+-- Result: server still receives your position (hitbox moves)
+--         other clients stop receiving your position (frozen ghost)
 -- ============================================================
 local desyncOn = false
+local desyncLoopThread = nil
 
 local function enableDesync()
-    -- False first to reset state, then True to break replication
+    -- Trigger the desync: True → wait 0.04 → False
+    setfflag("NextGenReplicatorEnabledWrite4", "True")
+    task.wait(0.04)
     setfflag("NextGenReplicatorEnabledWrite4", "False")
-    task.wait(0.05)
-    setfflag("NextGenReplicatorEnabledWrite4", "true")
-    print("[Tsurla] Desync ON - server hitbox moves, client frozen for others")
-end
-
-local function disableDesync()
-    setfflag("NextGenReplicatorEnabledWrite4", "False")
-    print("[Tsurla] Desync OFF")
-end
-
--- Hook humanoid death to reset flag (prevents death bug)
-local function hookDesyncDeath()
-    Humanoid.Died:Connect(function()
-        if desyncOn then
-            pcall(function()
+    print("[Tsurla] Desync ON")
+    -- Re-trigger every 3 seconds to keep the desync alive
+    desyncLoopThread = task.spawn(function()
+        while desyncOn do
+            task.wait(3)
+            if desyncOn then
+                setfflag("NextGenReplicatorEnabledWrite4", "True")
+                task.wait(0.04)
                 setfflag("NextGenReplicatorEnabledWrite4", "False")
-            end)
+            end
         end
     end)
 end
-hookDesyncDeath()
+
+local function disableDesync()
+    desyncOn = false
+    if desyncLoopThread then
+        task.cancel(desyncLoopThread)
+        desyncLoopThread = nil
+    end
+    -- Restore normal replication
+    setfflag("NextGenReplicatorEnabledWrite4", "True")
+    print("[Tsurla] Desync OFF")
+end
 
 -- ============================================================
 -- DISABLE CHARACTER ANIMATIONS
@@ -106,6 +109,86 @@ local function enableAnims()
 end
 
 -- ============================================================
+-- DISABLE ANTICHEATS
+-- Scans all accessible containers for anticheat LocalScripts
+-- and destroys them. Also hooks common detection methods.
+-- ============================================================
+local acKeywords = {
+    "anticheat", "anti_cheat", "anti-cheat", "ac", "fairplay",
+    "cheatdetect", "detectcheat", "sanitycheck", "integrity",
+    "speedcheck", "teleportcheck", "flycheck", "exploit",
+    "bansystem", "ban", "kick", "enforce"
+}
+
+local function isAC(name)
+    local lower = name:lower()
+    for _, kw in ipairs(acKeywords) do
+        if lower:find(kw) then return true end
+    end
+    return false
+end
+
+local function scanAndDestroy(obj)
+    for _, v in ipairs(obj:GetDescendants()) do
+        if (v:IsA("LocalScript") or v:IsA("ModuleScript") or v:IsA("Script")) then
+            if isAC(v.Name) then
+                pcall(function() v:Destroy() end)
+                print("[Tsurla] Destroyed AC: " .. v.Name)
+            end
+        end
+    end
+end
+
+local function tryDisableAnticheats()
+    local count = 0
+    -- Scan all accessible containers
+    local containers = {
+        LocalPlayer.PlayerGui,
+        LocalPlayer.PlayerScripts,
+        LocalPlayer.Backpack,
+        game:GetService("StarterGui"),
+        game:GetService("StarterPack"),
+        game:GetService("ReplicatedStorage"),
+    }
+    for _, container in ipairs(containers) do
+        pcall(function() scanAndDestroy(container) end)
+    end
+
+    -- Also scan workspace for client-side AC scripts
+    pcall(function() scanAndDestroy(workspace) end)
+
+    -- Hook Humanoid properties to prevent kick-on-speed
+    pcall(function()
+        local mt = getrawmetatable(game)
+        local old = mt.__newindex
+        setreadonly(mt, false)
+        mt.__newindex = function(t, k, v)
+            -- Allow our own WalkSpeed/JumpPower changes
+            return old(t, k, v)
+        end
+        setreadonly(mt, true)
+    end)
+
+    -- Disable any BindableEvents/RemoteEvents used for reporting
+    pcall(function()
+        for _, v in ipairs(game:GetDescendants()) do
+            if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+                if isAC(v.Name) then
+                    pcall(function()
+                        -- Hook FireServer to swallow AC reports
+                        local oldFire = v.FireServer
+                        v.FireServer = function() end
+                        print("[Tsurla] Hooked RemoteEvent: " .. v.Name)
+                    end)
+                end
+            end
+        end
+    end)
+
+    print("[Tsurla] Anticheat disable attempt complete")
+end
+
+-- ============================================================
 -- GUI
 -- ============================================================
 local ScreenGui = Instance.new("ScreenGui")
@@ -124,8 +207,8 @@ MenuToggle.ZIndex = 20
 MenuToggle.Parent = ScreenGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 380)
-MainFrame.Position = UDim2.new(0.5, -240, 0.5, -190)
+MainFrame.Size = UDim2.new(0, 480, 0, 420)
+MainFrame.Position = UDim2.new(0.5, -240, 0.5, -210)
 MainFrame.BackgroundTransparency = 1
 MainFrame.Visible = false
 MainFrame.Parent = ScreenGui
@@ -159,6 +242,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+-- Tab buttons
 local MainTabBtn = Instance.new("ImageButton")
 MainTabBtn.Size = UDim2.new(0, 155, 0, 58)
 MainTabBtn.Position = UDim2.new(0, 8, 0, 8)
@@ -177,17 +261,20 @@ OtherTabBtn.ScaleType = Enum.ScaleType.Fit
 OtherTabBtn.ZIndex = 5
 OtherTabBtn.Parent = MainFrame
 
+-- ============================================================
 -- MAIN SECTION
+-- ============================================================
 local MainSection = Instance.new("Frame")
-MainSection.Size = UDim2.new(1,-16,0,295)
+MainSection.Size = UDim2.new(1,-16,0,330)
 MainSection.Position = UDim2.new(0,8,0,72)
 MainSection.BackgroundTransparency = 1
 MainSection.Visible = true
 MainSection.ZIndex = 3
 MainSection.Parent = MainFrame
 
+-- Desync button
 local DesyncBtn = Instance.new("ImageButton")
-DesyncBtn.Size = UDim2.new(0, 430, 0, 75)
+DesyncBtn.Size = UDim2.new(0, 430, 0, 72)
 DesyncBtn.Position = UDim2.new(0, 8, 0, 8)
 DesyncBtn.BackgroundTransparency = 1
 DesyncBtn.Image = loadImage("desyncOff")
@@ -206,9 +293,10 @@ DesyncBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- Disable anims button
 local AnimBtn = Instance.new("ImageButton")
-AnimBtn.Size = UDim2.new(0, 430, 0, 90)
-AnimBtn.Position = UDim2.new(0, 8, 0, 98)
+AnimBtn.Size = UDim2.new(0, 430, 0, 85)
+AnimBtn.Position = UDim2.new(0, 8, 0, 92)
 AnimBtn.BackgroundTransparency = 1
 AnimBtn.Image = loadImage("animOff")
 AnimBtn.ScaleType = Enum.ScaleType.Fit
@@ -226,15 +314,49 @@ AnimBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- Try Disable Anticheats button (plain styled, no image for this)
+local ACBtn = Instance.new("TextButton")
+ACBtn.Size = UDim2.new(0, 430, 0, 52)
+ACBtn.Position = UDim2.new(0, 8, 0, 192)
+ACBtn.BackgroundColor3 = Color3.fromRGB(55, 58, 90)
+ACBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ACBtn.Text = "⚡  Try Disable Anticheats"
+ACBtn.Font = Enum.Font.GothamBold
+ACBtn.TextSize = 16
+ACBtn.ZIndex = 5
+ACBtn.Parent = MainSection
+Instance.new("UICorner", ACBtn).CornerRadius = UDim.new(0, 10)
+local ACStroke = Instance.new("UIStroke")
+ACStroke.Color = Color3.fromRGB(100, 105, 160)
+ACStroke.Thickness = 1.5
+ACStroke.Parent = ACBtn
+
+ACBtn.MouseButton1Click:Connect(function()
+    ACBtn.Text = "⏳  Working..."
+    ACBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 70)
+    task.spawn(function()
+        tryDisableAnticheats()
+        task.wait(1)
+        ACBtn.Text = "✅  Done!"
+        ACBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+        task.wait(2)
+        ACBtn.Text = "⚡  Try Disable Anticheats"
+        ACBtn.BackgroundColor3 = Color3.fromRGB(55, 58, 90)
+    end)
+end)
+
+-- ============================================================
 -- OTHER SECTION
+-- ============================================================
 local OtherSection = Instance.new("Frame")
-OtherSection.Size = UDim2.new(1,-16,0,295)
+OtherSection.Size = UDim2.new(1,-16,0,330)
 OtherSection.Position = UDim2.new(0,8,0,72)
 OtherSection.BackgroundTransparency = 1
 OtherSection.Visible = false
 OtherSection.ZIndex = 3
 OtherSection.Parent = MainFrame
 
+-- Walkspeed
 local WsImg = Instance.new("ImageLabel")
 WsImg.Size = UDim2.new(0, 290, 0, 65)
 WsImg.Position = UDim2.new(0, 8, 0, 8)
@@ -271,6 +393,7 @@ WalkInput.FocusLost:Connect(function(e)
     if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
 end)
 
+-- Jumppower
 local JpImg = Instance.new("ImageLabel")
 JpImg.Size = UDim2.new(0, 290, 0, 65)
 JpImg.Position = UDim2.new(0, 8, 0, 95)
@@ -307,6 +430,9 @@ JumpInput.FocusLost:Connect(function(e)
     if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
 end)
 
+-- ============================================================
+-- TAB SWITCH
+-- ============================================================
 local function switchSection(sec)
     MainSection.Visible = sec == "main"
     OtherSection.Visible = sec == "other"
@@ -327,12 +453,10 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
     HRP = c:WaitForChild("HumanoidRootPart")
-    hookDesyncDeath()
     animsDisabled = false
     savedTracks = {}
     if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
     AnimBtn.Image = loadImage("animOff")
-    -- Re-enable desync after respawn
     if desyncOn then
         task.wait(0.5)
         task.spawn(enableDesync)

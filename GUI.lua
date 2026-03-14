@@ -45,19 +45,21 @@ end)
 -- ============================================================
 local desyncOn = false
 local desyncConn = nil
-local ghostCF = nil
 
 local function enableDesync()
-    ghostCF = HRP.CFrame
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
 
+    -- VELOCITY ZERO TRICK:
+    -- Never touch CFrame at all (that's what was freezing you).
+    -- Instead, zero out the replicated velocity every Stepped frame.
+    -- Other clients receive velocity=0 so they see you as standing still.
+    -- Your LOCAL physics/CFrame are completely untouched — you move freely.
+    -- The server still receives your real CFrame via normal network ownership.
     desyncConn = RunService.Stepped:Connect(function()
         if not desyncOn or not HRP or not HRP.Parent then return end
-        -- Push the frozen ghost CFrame to the server/other clients
-        -- via the hidden replication property ONLY.
-        -- We do NOT touch HRP.CFrame so the local player moves freely.
         pcall(function()
-            sethiddenproperty(HRP, "CFrame", ghostCF)
+            sethiddenproperty(HRP, "Velocity", Vector3.zero)
+            sethiddenproperty(HRP, "RotVelocity", Vector3.zero)
         end)
     end)
     print("[Tsurla] Desync ON")
@@ -70,6 +72,7 @@ local function disableDesync()
         desyncConn = nil
     end
     ghostCF = nil
+    realCF = nil
     pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
     print("[Tsurla] Desync OFF")
 end

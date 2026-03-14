@@ -1,7 +1,6 @@
 -- Tsurla Hub
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -31,46 +30,41 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC
+-- DESYNC - NextGenReplicator method (confirmed working 2026)
+--
 -- How it works:
---   setfflag("WorldStepMax", "-99999999999999") corrupts the
---   physics timestep. This causes Roblox's networking layer to
---   stop replicating your position to OTHER clients.
---   The server STILL receives your position (hitbox moves freely).
---   Other players see you frozen at the position you were at
---   when desync was triggered. You are invisible + invincible.
---   setfflag("WorldStepMax", "-1") locks it in that broken state.
---   On disable: reset flag to "0" to restore normal replication.
+--   NextGenReplicatorEnabledWrite4 controls whether the server
+--   forwards YOUR character position to OTHER clients.
+--
+--   Setting False→True in quick succession breaks the
+--   server-to-other-clients replication pipeline specifically.
+--
+--   Client→Server replication is UNAFFECTED:
+--     - Your client still sends your real position to server
+--     - Server hitbox moves freely with you as normal
+--
+--   Server→OtherClients replication is BROKEN:
+--     - Other players see your character frozen/invisible
+--     - They cannot see or hit you
+--     - You can interact with the game normally (hitboxes, damage, etc)
+--
+--   On disable: set flag to False to restore normal replication
 -- ============================================================
 local desyncOn = false
 
 local function enableDesync()
-    -- Step 1: Slam the physics timestep to a huge negative
-    setfflag("WorldStepMax", "-99999999999999")
-    -- Step 2: Wait for the broken state to propagate
-    task.wait(1)
-    -- Step 3: Set to -1 to lock the desync in permanently
-    setfflag("WorldStepMax", "-1")
-    -- Step 4: Also kill NextGenReplicator write if available (newer Roblox)
-    pcall(function()
-        setfflag("NextGenReplicatorEnabledWrite4", "False")
-        task.wait(0.05)
-        setfflag("NextGenReplicatorEnabledWrite4", "True")
-    end)
+    -- Toggle False→True breaks the server→other clients pipeline
+    setfflag("NextGenReplicatorEnabledWrite4", "False")
+    setfflag("NextGenReplicatorEnabledWrite4", "True")
 end
 
 local function disableDesync()
-    -- Restore normal physics replication
-    setfflag("WorldStepMax", "0")
-    pcall(function()
-        setfflag("NextGenReplicatorEnabledWrite4", "False")
-    end)
+    -- Setting False restores normal replication
+    setfflag("NextGenReplicatorEnabledWrite4", "False")
 end
 
 -- ============================================================
 -- DISABLE CHARACTER ANIMATIONS
--- Stops every playing track and hooks AnimationPlayed to stop
--- any new ones immediately. Restores on toggle off.
 -- ============================================================
 local animsDisabled = false
 local savedTracks = {}
@@ -177,7 +171,7 @@ OtherTabBtn.ZIndex = 5
 OtherTabBtn.Parent = MainFrame
 
 -- ============================================================
--- MAIN SECTION
+-- MAIN SECTION (Desync + Anims)
 -- ============================================================
 local MainSection = Instance.new("Frame")
 MainSection.Size = UDim2.new(1,-16,0,295)
@@ -198,16 +192,13 @@ DesyncBtn.Parent = MainSection
 
 DesyncBtn.MouseButton1Click:Connect(function()
     desyncOn = not desyncOn
-    DesyncBtn.Active = false -- prevent spam clicking during wait
     if desyncOn then
+        enableDesync()
         DesyncBtn.Image = loadImage("desyncOn")
-        task.spawn(enableDesync)
     else
-        DesyncBtn.Image = loadImage("desyncOff")
         disableDesync()
+        DesyncBtn.Image = loadImage("desyncOff")
     end
-    task.wait(1.2)
-    DesyncBtn.Active = true
 end)
 
 local AnimBtn = Instance.new("ImageButton")
@@ -231,7 +222,7 @@ AnimBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ============================================================
--- OTHER SECTION
+-- OTHER SECTION (Walkspeed + Jumppower)
 -- ============================================================
 local OtherSection = Instance.new("Frame")
 OtherSection.Size = UDim2.new(1,-16,0,295)
@@ -342,12 +333,17 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     HRP = c:WaitForChild("HumanoidRootPart")
     WalkInput.Text = tostring(Humanoid.WalkSpeed)
     JumpInput.Text = tostring(Humanoid.JumpPower)
-    desyncOn = false
+    -- Re-enable desync after respawn if it was on
+    if desyncOn then
+        task.wait(0.5)
+        enableDesync()
+    end
+    -- Reset anims state
     animsDisabled = false
     savedTracks = {}
     if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
-    DesyncBtn.Image = loadImage("desyncOff")
     AnimBtn.Image = loadImage("animOff")
+    -- Reapply speed/jump
     task.wait(0.1)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)

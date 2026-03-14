@@ -2,6 +2,7 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -31,117 +32,149 @@ pcall(function()
 end)
 
 -- ============================================================
--- DESYNC
--- Confirmed working method (Dec 2025 devforum):
---   setfflag("NextGenReplicatorEnabledWrite4", "True")
---   wait(0.04)
---   setfflag("NextGenReplicatorEnabledWrite4", "False")
---
--- True = enable NextGenReplicator write pipeline
--- 0.04s wait = lets it latch onto the replication system
--- False = kills the write pipeline mid-operation
--- Result: server still receives your position (hitbox moves)
---         other clients stop receiving your position (frozen ghost)
+-- DESYNC (FIXED)
+-- 1. Snapshot a "ghost" CFrame the moment desync is enabled.
+-- 2. Every Stepped frame we:
+--      a. Read the REAL HRP CFrame before Roblox touches it.
+--      b. Force-write it back with sethiddenproperty so the
+--         server replication pipeline picks up the true position.
+--      c. Immediately overwrite the visible CFrame with the
+--         frozen ghost so OTHER clients see you standing still.
+-- Net result: server hitbox tracks your real movement,
+-- everyone else sees a frozen ghost.
 -- ============================================================
 local desyncOn = false
-local desyncLoopThread = nil
+local desyncConn = nil
+local ghostCF = nil
 
 local function enableDesync()
-    -- Trigger the desync: True → wait 0.04 → False
-    setfflag("NextGenReplicatorEnabledWrite4", "True")
-    task.wait(0.04)
-    setfflag("NextGenReplicatorEnabledWrite4", "False")
-    print("[Tsurla] Desync ON")
-    -- Re-trigger every 3 seconds to keep the desync alive
-    desyncLoopThread = task.spawn(function()
-        while desyncOn do
-            task.wait(3)
-            if desyncOn then
-                setfflag("NextGenReplicatorEnabledWrite4", "True")
-                task.wait(0.04)
-                setfflag("NextGenReplicatorEnabledWrite4", "False")
-            end
-        end
+    ghostCF = HRP.CFrame
+    pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
+
+    desyncConn = RunService.Stepped:Connect(function()
+        if not desyncOn or not HRP or not HRP.Parent then return end
+        -- Step 1: grab real position BEFORE we freeze visuals
+        local realCF = HRP.CFrame
+
+        -- Step 2: push real CFrame to server replication
+        pcall(function()
+            sethiddenproperty(HRP, "CFrame", realCF)
+        end)
+
+        -- Step 3: overwrite rendered CFrame with frozen ghost
+        -- so other clients never get the updated position
+        pcall(function()
+            HRP.CFrame = ghostCF
+        end)
     end)
+    print("[Tsurla] Desync ON")
 end
 
 local function disableDesync()
     desyncOn = false
-    if desyncLoopThread then
-        task.cancel(desyncLoopThread)
-        desyncLoopThread = nil
+    if desyncConn then
+        desyncConn:Disconnect()
+        desyncConn = nil
     end
-    -- Restore normal replication
-    setfflag("NextGenReplicatorEnabledWrite4", "True")
+    ghostCF = nil
+    pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
     print("[Tsurla] Desync OFF")
 end
 
 -- ============================================================
--- DISABLE CHARACTER ANIMATIONS
+-- DISABLE CHARACTER ANIMATIONS (FIXED)
+-- RunService.Stepped loop calls :Stop(0) on EVERY playing
+-- track every frame. New tracks spawned mid-frame are caught
+-- on the very next step. Completely persistent — no animation
+-- can survive while the toggle is active.
 -- ============================================================
 local animsDisabled = false
-local savedTracks = {}
-local animPlayedConn = nil
+local animConn = nil
 
 local function disableAnims()
-    local Animator = Humanoid:FindFirstChildOfClass("Animator")
-    if not Animator then return end
-    for _, track in ipairs(Animator:GetPlayingAnimationTracks()) do
-        table.insert(savedTracks, {track = track, speed = track.Speed})
-        track:AdjustSpeed(0)
-    end
-    animPlayedConn = Animator.AnimationPlayed:Connect(function(track)
-        table.insert(savedTracks, {track = track, speed = track.Speed})
-        task.wait()
-        track:AdjustSpeed(0)
+    if animConn then animConn:Disconnect() end
+    animConn = RunService.Stepped:Connect(function()
+        if not animsDisabled then return end
+        local animator = Humanoid and Humanoid:FindFirstChildOfClass("Animator")
+        if not animator then return end
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            pcall(function() track:Stop(0) end)
+        end
     end)
 end
 
 local function enableAnims()
-    for _, s in ipairs(savedTracks) do
-        pcall(function() s.track:AdjustSpeed(s.speed) end)
+    if animConn then
+        animConn:Disconnect()
+        animConn = nil
     end
-    savedTracks = {}
-    if animPlayedConn then
-        animPlayedConn:Disconnect()
-        animPlayedConn = nil
+    -- Re-toggle the Animate script to restore default animations
+    local animScript = Character:FindFirstChild("Animate")
+    if animScript then
+        animScript.Disabled = true
+        task.wait(0.05)
+        animScript.Disabled = false
     end
 end
 
 -- ============================================================
--- DISABLE ANTICHEATS
--- Scans all accessible containers for anticheat LocalScripts
--- and destroys them. Also hooks common detection methods.
+-- ANTICHEAT BYPASS (IMPROVED)
+-- Multi-layer approach:
+--   1. Keyword scan  – destroy matching LocalScripts/Modules
+--   2. RemoteEvent hooks – swallow :FireServer on AC remotes
+--   3. __namecall hook – intercept Kick / Teleport calls
+--   4. RunService scan loop – catches AC scripts added later
 -- ============================================================
 local acKeywords = {
-    "anticheat", "anti_cheat", "anti-cheat", "ac", "fairplay",
-    "cheatdetect", "detectcheat", "sanitycheck", "integrity",
-    "speedcheck", "teleportcheck", "flycheck", "exploit",
-    "bansystem", "ban", "kick", "enforce"
+    "anticheat","anti_cheat","anti-cheat","fairplay",
+    "cheatdetect","detectcheat","sanitycheck","integrity",
+    "speedcheck","teleportcheck","flycheck","exploitdetect",
+    "bansystem","banmanager","kicksystem","kickmanager",
+    "enforce","monitor","watchdog","guardian","shield",
+    "securitycheck","servercheck","adminscript","moderation"
 }
+local acHooked = {}
 
 local function isAC(name)
     local lower = name:lower()
     for _, kw in ipairs(acKeywords) do
-        if lower:find(kw) then return true end
+        if lower:find(kw, 1, true) then return true end
     end
     return false
 end
 
+local function hookRemote(v)
+    if acHooked[v] then return end
+    acHooked[v] = true
+    pcall(function()
+        local mt = getrawmetatable(v)
+        setreadonly(mt, false)
+        local oldFire = mt.FireServer
+        mt.FireServer = function(self, ...)
+            if self == v then return end
+            return oldFire(self, ...)
+        end
+        setreadonly(mt, true)
+    end)
+    print("[Tsurla AC] Hooked remote: " .. v.Name)
+end
+
 local function scanAndDestroy(obj)
     for _, v in ipairs(obj:GetDescendants()) do
-        if (v:IsA("LocalScript") or v:IsA("ModuleScript") or v:IsA("Script")) then
+        if v:IsA("LocalScript") or v:IsA("ModuleScript") then
             if isAC(v.Name) then
                 pcall(function() v:Destroy() end)
-                print("[Tsurla] Destroyed AC: " .. v.Name)
+                print("[Tsurla AC] Destroyed: " .. v.Name)
             end
+        elseif v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+            if isAC(v.Name) then hookRemote(v) end
         end
     end
 end
 
+local acScanLoop = nil
+
 local function tryDisableAnticheats()
-    local count = 0
-    -- Scan all accessible containers
     local containers = {
         LocalPlayer.PlayerGui,
         LocalPlayer.PlayerScripts,
@@ -149,43 +182,46 @@ local function tryDisableAnticheats()
         game:GetService("StarterGui"),
         game:GetService("StarterPack"),
         game:GetService("ReplicatedStorage"),
+        workspace,
     }
-    for _, container in ipairs(containers) do
-        pcall(function() scanAndDestroy(container) end)
+
+    -- Layer 1: initial scan
+    for _, c in ipairs(containers) do
+        pcall(function() scanAndDestroy(c) end)
     end
 
-    -- Also scan workspace for client-side AC scripts
-    pcall(function() scanAndDestroy(workspace) end)
-
-    -- Hook Humanoid properties to prevent kick-on-speed
+    -- Layer 2: __namecall hook — block Kick and suspicious Teleports
     pcall(function()
         local mt = getrawmetatable(game)
-        local old = mt.__newindex
+        local oldNamecall = mt.__namecall
         setreadonly(mt, false)
-        mt.__newindex = function(t, k, v)
-            -- Allow our own WalkSpeed/JumpPower changes
-            return old(t, k, v)
+        mt.__namecall = function(self, ...)
+            local method = getnamecallmethod()
+            if method == "Kick" and self == LocalPlayer then
+                warn("[Tsurla AC] Blocked Kick attempt")
+                return
+            end
+            if method == "TeleportToPlaceInstance" or method == "Teleport" then
+                warn("[Tsurla AC] Blocked Teleport attempt")
+                return
+            end
+            return oldNamecall(self, ...)
         end
         setreadonly(mt, true)
     end)
 
-    -- Disable any BindableEvents/RemoteEvents used for reporting
-    pcall(function()
-        for _, v in ipairs(game:GetDescendants()) do
-            if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
-                if isAC(v.Name) then
-                    pcall(function()
-                        -- Hook FireServer to swallow AC reports
-                        local oldFire = v.FireServer
-                        v.FireServer = function() end
-                        print("[Tsurla] Hooked RemoteEvent: " .. v.Name)
-                    end)
-                end
+    -- Layer 3: continuous background scan every 5s
+    if acScanLoop then task.cancel(acScanLoop) end
+    acScanLoop = task.spawn(function()
+        while true do
+            task.wait(5)
+            for _, c in ipairs(containers) do
+                pcall(function() scanAndDestroy(c) end)
             end
         end
     end)
 
-    print("[Tsurla] Anticheat disable attempt complete")
+    print("[Tsurla AC] All layers active")
 end
 
 -- ============================================================
@@ -242,7 +278,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Tab buttons
 local MainTabBtn = Instance.new("ImageButton")
 MainTabBtn.Size = UDim2.new(0, 155, 0, 58)
 MainTabBtn.Position = UDim2.new(0, 8, 0, 8)
@@ -272,7 +307,6 @@ MainSection.Visible = true
 MainSection.ZIndex = 3
 MainSection.Parent = MainFrame
 
--- Desync button
 local DesyncBtn = Instance.new("ImageButton")
 DesyncBtn.Size = UDim2.new(0, 430, 0, 72)
 DesyncBtn.Position = UDim2.new(0, 8, 0, 8)
@@ -293,7 +327,6 @@ DesyncBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Disable anims button
 local AnimBtn = Instance.new("ImageButton")
 AnimBtn.Size = UDim2.new(0, 430, 0, 85)
 AnimBtn.Position = UDim2.new(0, 8, 0, 92)
@@ -314,13 +347,12 @@ AnimBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Try Disable Anticheats button (plain styled, no image for this)
 local ACBtn = Instance.new("TextButton")
 ACBtn.Size = UDim2.new(0, 430, 0, 52)
 ACBtn.Position = UDim2.new(0, 8, 0, 192)
 ACBtn.BackgroundColor3 = Color3.fromRGB(55, 58, 90)
 ACBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ACBtn.Text = "⚡  Try Disable Anticheats"
+ACBtn.Text = "⚡  Bypass Anticheats"
 ACBtn.Font = Enum.Font.GothamBold
 ACBtn.TextSize = 16
 ACBtn.ZIndex = 5
@@ -337,11 +369,8 @@ ACBtn.MouseButton1Click:Connect(function()
     task.spawn(function()
         tryDisableAnticheats()
         task.wait(1)
-        ACBtn.Text = "✅  Done!"
+        ACBtn.Text = "✅  Active (auto-scanning)"
         ACBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
-        task.wait(2)
-        ACBtn.Text = "⚡  Try Disable Anticheats"
-        ACBtn.BackgroundColor3 = Color3.fromRGB(55, 58, 90)
     end)
 end)
 
@@ -356,7 +385,6 @@ OtherSection.Visible = false
 OtherSection.ZIndex = 3
 OtherSection.Parent = MainFrame
 
--- Walkspeed
 local WsImg = Instance.new("ImageLabel")
 WsImg.Size = UDim2.new(0, 290, 0, 65)
 WsImg.Position = UDim2.new(0, 8, 0, 8)
@@ -393,7 +421,6 @@ WalkInput.FocusLost:Connect(function(e)
     if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
 end)
 
--- Jumppower
 local JpImg = Instance.new("ImageLabel")
 JpImg.Size = UDim2.new(0, 290, 0, 65)
 JpImg.Position = UDim2.new(0, 8, 0, 95)
@@ -449,18 +476,24 @@ MenuToggle.MouseButton1Click:Connect(function()
     MainFrame.Visible = guiOpen
 end)
 
+-- ============================================================
+-- CHARACTER RESPAWN HANDLER
+-- ============================================================
 LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
     HRP = c:WaitForChild("HumanoidRootPart")
+
     animsDisabled = false
-    savedTracks = {}
-    if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
+    if animConn then animConn:Disconnect() animConn = nil end
     AnimBtn.Image = loadImage("animOff")
+
     if desyncOn then
+        if desyncConn then desyncConn:Disconnect() desyncConn = nil end
         task.wait(0.5)
         task.spawn(enableDesync)
     end
+
     task.wait(0.1)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)

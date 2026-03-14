@@ -1,7 +1,6 @@
 -- Tsurla Hub
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
@@ -31,86 +30,48 @@ pcall(function()
 end)
 
 -- ============================================================
--- CHECK SETFFLAG SUPPORT
--- ============================================================
-local hasFFlag = typeof(setfflag) == "function"
-if not hasFFlag then
-    warn("[Tsurla] setfflag not supported by this executor!")
-else
-    print("[Tsurla] setfflag supported!")
-end
-
--- ============================================================
 -- DESYNC
--- Goal: Server hitbox moves with you, other clients see you frozen
 --
--- Method 1 (newer Roblox): NextGenReplicatorEnabledWrite4
---   Breaks server→other clients replication pipeline only.
---   Client→Server stays intact so server hitbox still moves.
+-- ONLY NextGenReplicatorEnabledWrite4 is used.
+-- WorldStepMax is NOT used — it freezes client→server which
+-- is the opposite of what we want.
 --
--- Method 2 (older Roblox): WorldStepMax
---   setfflag("WorldStepMax","-99999999999999") then wait(1)
---   then setfflag("WorldStepMax","-1")
---   Corrupts physics step timing, breaks outgoing replication
---   to other clients while server still receives position.
+-- NextGenReplicatorEnabledWrite4 False→True:
+--   Breaks ONLY the server→other clients replication pipeline.
+--   Client→Server is completely unaffected.
+--   So: your real movement still reaches the server (hitbox moves)
+--   But: server stops broadcasting your position to other clients
+--   Result: other players see you frozen, server hitbox moves freely
 --
--- Both methods together cover all Roblox versions.
+-- Called again on respawn with "true" (lowercase matches original)
+-- Called with "False" on death/disable to restore replication
 -- ============================================================
 local desyncOn = false
-local desyncConn = nil
 
 local function enableDesync()
-    if not hasFFlag then
-        warn("[Tsurla] Cannot desync: setfflag not available")
-        return
-    end
-
-    -- Method 1: NextGenReplicator (2026 Roblox)
-    pcall(function()
-        setfflag("NextGenReplicatorEnabledWrite4", "False")
-        setfflag("NextGenReplicatorEnabledWrite4", "True")
-    end)
-
-    -- Method 2: WorldStepMax (older Roblox, backup)
-    pcall(function()
-        setfflag("WorldStepMax", "-99999999999999")
-    end)
-    task.wait(1)
-    pcall(function()
-        setfflag("WorldStepMax", "-1")
-    end)
-
-    -- Keep re-triggering NextGenReplicator every 2s to maintain desync
-    -- (some Roblox versions reset it automatically)
-    desyncConn = task.spawn(function()
-        while desyncOn do
-            pcall(function()
-                setfflag("NextGenReplicatorEnabledWrite4", "False")
-                setfflag("NextGenReplicatorEnabledWrite4", "True")
-            end)
-            task.wait(2)
-        end
-    end)
-
-    print("[Tsurla] Desync enabled")
+    -- False first to reset state, then True to break replication
+    setfflag("NextGenReplicatorEnabledWrite4", "False")
+    task.wait(0.05)
+    setfflag("NextGenReplicatorEnabledWrite4", "true")
+    print("[Tsurla] Desync ON - server hitbox moves, client frozen for others")
 end
 
 local function disableDesync()
-    if not hasFFlag then return end
-    desyncOn = false
-
-    -- Restore NextGenReplicator
-    pcall(function()
-        setfflag("NextGenReplicatorEnabledWrite4", "False")
-    end)
-
-    -- Restore WorldStepMax
-    pcall(function()
-        setfflag("WorldStepMax", "0.1")
-    end)
-
-    print("[Tsurla] Desync disabled")
+    setfflag("NextGenReplicatorEnabledWrite4", "False")
+    print("[Tsurla] Desync OFF")
 end
+
+-- Hook humanoid death to reset flag (prevents death bug)
+local function hookDesyncDeath()
+    Humanoid.Died:Connect(function()
+        if desyncOn then
+            pcall(function()
+                setfflag("NextGenReplicatorEnabledWrite4", "False")
+            end)
+        end
+    end)
+end
+hookDesyncDeath()
 
 -- ============================================================
 -- DISABLE CHARACTER ANIMATIONS
@@ -366,11 +327,16 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     Character = c
     Humanoid = c:WaitForChild("Humanoid")
     HRP = c:WaitForChild("HumanoidRootPart")
+    hookDesyncDeath()
     animsDisabled = false
     savedTracks = {}
     if animPlayedConn then animPlayedConn:Disconnect() animPlayedConn = nil end
     AnimBtn.Image = loadImage("animOff")
-    if desyncOn then task.spawn(enableDesync) end
+    -- Re-enable desync after respawn
+    if desyncOn then
+        task.wait(0.5)
+        task.spawn(enableDesync)
+    end
     task.wait(0.1)
     local ws = tonumber(WalkInput.Text)
     local jp = tonumber(JumpInput.Text)
@@ -378,4 +344,4 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     if jp then Humanoid.JumpPower = jp end
 end)
 
-print("[Tsurla Hub] Loaded! setfflag supported: " .. tostring(hasFFlag))
+print("[Tsurla Hub] Loaded!")

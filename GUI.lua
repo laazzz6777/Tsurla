@@ -1,544 +1,810 @@
--- Tsurla Hub
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local Humanoid = Character:WaitForChild("Humanoid")
-local HRP = Character:WaitForChild("HumanoidRootPart")
-
-local REPO = "https://raw.githubusercontent.com/laazzz6777/Tsurla/main/images/"
-local loadedImages = {}
-local function loadImage(name)
-    if loadedImages[name] then return loadedImages[name] end
-    local ok, result = pcall(function()
-        local data = game:HttpGet(REPO .. name .. ".png")
-        writefile("tsurla_" .. name .. ".png", data)
-        return getcustomasset("tsurla_" .. name .. ".png")
-    end)
-    loadedImages[name] = ok and result or ""
-    return loadedImages[name]
-end
-for _, n in ipairs({"background","main","menu","walkspeed","jumppower","other","desyncOn","desyncOff","animOn","animOff"}) do
-    task.spawn(function() loadImage(n) end)
-end
-task.wait(2.5)
-
-pcall(function()
-    if LocalPlayer.PlayerGui:FindFirstChild("TsurlaHub") then
-        LocalPlayer.PlayerGui.TsurlaHub:Destroy()
-    end
-end)
-
 -- ============================================================
--- DESYNC — Mechanism Constraint Replication Halt
--- Source: DevForum bug report Feb 2024 by ThoughtSpinnr,
---         confirmed still unfixed June 2024. Jan 2026 patch
---         fixed a different code path (server→client forward),
---         this targets the client→server physics sender.
---
--- How it works:
---   Roblox's PhysicsSender decides whether to send a part's
---   state based on whether it's part of a "clean" assembly.
---   When a client-local mechanism constraint (Rope/Rod/Hinge)
---   chains: AnchoredPart → UnanchoredPart → HRP,
---   the engine's assembly root resolution gets confused and
---   stops queuing HRP physics packets entirely.
---
---   We use RopeConstraints with Length=10000 so the ropes
---   don't physically restrict movement — the constraint
---   configuration just needs to EXIST to trigger the bug.
---
---   Effect: YOU move freely, everyone else (including server)
---   sees you frozen at the position where desync was enabled.
---
---   Best for: games with client-side hit detection where
---   being invisible = being unhittable.
+--  GUI.lua — Autoplay + Aimbot + ESP + AutoDodge + AutoShoot + Juke
+--  Enemy = any team with "Murder" in name
+--  Autoplay button uses custom PNGs (on/off)
 -- ============================================================
-local desyncOn = false
-local desyncParts = {}
 
-local function cleanDesyncParts()
-    for _, v in ipairs(desyncParts) do
-        pcall(function() v:Destroy() end)
-    end
-    desyncParts = {}
-end
+local Players             = game:GetService("Players")
+local RunService          = game:GetService("RunService")
+local UserInputService    = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local StarterGui          = game:GetService("StarterGui")
+local Workspace           = game:GetService("Workspace")
 
-local function enableDesync()
-    cleanDesyncParts()
-    pcall(function() HRP:SetNetworkOwner(LocalPlayer) end)
+local player    = Players.LocalPlayer
+repeat task.wait() until player
+local playerGui = player:WaitForChild("PlayerGui")
+local camera    = workspace.CurrentCamera
 
-    -- Part A: anchored ghost anchor at current position
-    local partA = Instance.new("Part")
-    partA.Name = "_DSA"
-    partA.Size = Vector3.new(0.05, 0.05, 0.05)
-    partA.Anchored = true
-    partA.CanCollide = false
-    partA.CanTouch = false
-    partA.CanQuery = false
-    partA.Transparency = 1
-    partA.CFrame = HRP.CFrame
-    partA.Parent = workspace
-    table.insert(desyncParts, partA)
-
-    -- Part B: unanchored middle-man
-    local partB = Instance.new("Part")
-    partB.Name = "_DSB"
-    partB.Size = Vector3.new(0.05, 0.05, 0.05)
-    partB.Anchored = false
-    partB.CanCollide = false
-    partB.CanTouch = false
-    partB.CanQuery = false
-    partB.Transparency = 1
-    partB.CFrame = HRP.CFrame
-    partB.Parent = workspace
-    table.insert(desyncParts, partB)
-
-    -- Attachments
-    local attA = Instance.new("Attachment")
-    attA.Parent = partA
-    table.insert(desyncParts, attA)
-
-    local attB = Instance.new("Attachment")
-    attB.Parent = partB
-    table.insert(desyncParts, attB)
-
-    -- HRP gets its own attachment for the chain
-    local attHRP = Instance.new("Attachment")
-    attHRP.Name = "_DSAttach"
-    attHRP.Parent = HRP
-    table.insert(desyncParts, attHRP)
-
-    -- Mechanism constraint: A → B (RopeConstraint, length 10000)
-    -- Must be a mechanism type (Rope/Rod/Hinge) — NOT AlignPosition
-    local ropeAB = Instance.new("RopeConstraint")
-    ropeAB.Name = "_DSRAB"
-    ropeAB.Attachment0 = attA
-    ropeAB.Attachment1 = attB
-    ropeAB.Length = 10000
-    ropeAB.Parent = partA
-    table.insert(desyncParts, ropeAB)
-
-    -- Mechanism constraint: B → HRP (RopeConstraint, length 10000)
-    local ropeHRP = Instance.new("RopeConstraint")
-    ropeHRP.Name = "_DSRHRP"
-    ropeHRP.Attachment0 = attB
-    ropeHRP.Attachment1 = attHRP
-    ropeHRP.Length = 10000
-    ropeHRP.Parent = partB
-    table.insert(desyncParts, ropeHRP)
-
-    print("[Tsurla] Desync ON — constraint replication halt active")
-end
-
-local function disableDesync()
-    desyncOn = false
-    cleanDesyncParts()
-    -- Remove the HRP attachment we added
-    local a = HRP:FindFirstChild("_DSAttach")
-    if a then a:Destroy() end
-    print("[Tsurla] Desync OFF")
-end
-
--- ============================================================
--- DISABLE ANIMATIONS
--- Stepped loop calls Stop(0) every frame — nothing can play.
--- ============================================================
-local animsDisabled = false
-local animConn = nil
-
-local function disableAnims()
-    if animConn then animConn:Disconnect() end
-    animConn = RunService.Stepped:Connect(function()
-        if not animsDisabled then return end
-        local animator = Humanoid and Humanoid:FindFirstChildOfClass("Animator")
-        if not animator then return end
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            pcall(function() track:Stop(0) end)
-        end
-    end)
-end
-
-local function enableAnims()
-    if animConn then
-        animConn:Disconnect()
-        animConn = nil
-    end
-    local animScript = Character:FindFirstChild("Animate")
-    if animScript then
-        animScript.Disabled = true
-        task.wait(0.05)
-        animScript.Disabled = false
-    end
-end
-
--- ============================================================
--- ANTICHEAT BYPASS
--- Layer 1: keyword scan + destroy matching scripts
--- Layer 2: hook FireServer on AC remotes
--- Layer 3: __namecall hook — block Kick / Teleport
--- Layer 4: background rescan every 5s
--- ============================================================
-local acKeywords = {
-    "anticheat","anti_cheat","anti-cheat","fairplay",
-    "cheatdetect","detectcheat","sanitycheck","integrity",
-    "speedcheck","teleportcheck","flycheck","exploitdetect",
-    "bansystem","banmanager","kicksystem","kickmanager",
-    "enforce","monitor","watchdog","guardian","shield",
-    "securitycheck","servercheck","adminscript","moderation"
+-- ══════════════════════════════════════════
+--  SETTINGS
+-- ══════════════════════════════════════════
+local Settings = {
+    FOV_RADIUS     = 150,
+    AIMBOT         = true,
+    WALL_CHECK     = true,
+    ESP            = true,
+    AUTOPLAY       = true,
+    AUTO_SHOOT     = true,
+    AUTO_DODGE     = true,
+    JUKE           = true,
+    JUKE_RANGE     = 12,
+    SHOOT_COOLDOWN = 0.12,
 }
-local acHooked = {}
 
-local function isAC(name)
-    local lower = name:lower()
-    for _, kw in ipairs(acKeywords) do
-        if lower:find(kw, 1, true) then return true end
-    end
-    return false
+-- PNG asset IDs from your images
+local IMG_ON  = "rbxassetid://1773565569861"
+local IMG_OFF = "rbxassetid://1773565479579"
+
+-- ══════════════════════════════════════════
+--  ENEMY CHECK  (team name contains "Murder")
+-- ══════════════════════════════════════════
+local function isEnemy(plr)
+    if plr == player then return false end
+    local t = plr.Team
+    if t and t.Name:find("Murder") then return true end
+    if not plr.Team or not player.Team then return true end
+    return plr.Team ~= player.Team
 end
 
-local function hookRemote(v)
-    if acHooked[v] then return end
-    acHooked[v] = true
+-- ══════════════════════════════════════════
+--  ESP
+-- ══════════════════════════════════════════
+local espObjects = {}
+
+local function createESP(plr)
+    if plr == player or not plr.Character then return end
+    pcall(function() if espObjects[plr] then espObjects[plr]:Destroy() end end)
+    local h                  = Instance.new("Highlight")
+    h.Parent                 = plr.Character
+    h.FillColor              = Color3.fromRGB(255, 0, 0)
+    h.OutlineColor           = Color3.fromRGB(255, 255, 255)
+    h.FillTransparency       = 0.5
+    h.OutlineTransparency    = 0
+    h.DepthMode              = Enum.HighlightDepthMode.AlwaysOnTop
+    h.Enabled                = Settings.ESP and isEnemy(plr)
+    espObjects[plr]          = h
+end
+
+local function removeESP(plr)
+    pcall(function() if espObjects[plr] then espObjects[plr]:Destroy() end end)
+    espObjects[plr] = nil
+end
+
+local function updateESP()
+    for plr, h in pairs(espObjects) do
+        if h and h.Parent then
+            h.Enabled = Settings.ESP and isEnemy(plr)
+        end
+    end
+end
+
+local function setupESP(plr)
+    if plr == player then return end
+    plr.CharacterAdded:Connect(function() task.wait(0.5) createESP(plr) end)
+    plr.CharacterRemoving:Connect(function() removeESP(plr) end)
+    plr:GetPropertyChangedSignal("Team"):Connect(function() task.wait(0.1) updateESP() end)
+    if plr.Character then task.spawn(function() task.wait(0.5) createESP(plr) end) end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do setupESP(p) end
+Players.PlayerAdded:Connect(setupESP)
+Players.PlayerRemoving:Connect(removeESP)
+player:GetPropertyChangedSignal("Team"):Connect(updateESP)
+
+-- ══════════════════════════════════════════
+--  AIMBOT
+-- ══════════════════════════════════════════
+local aimbotTarget = nil
+local MOUSE_LOCKED = false
+
+local function isVisible(char)
+    if not char or not Settings.WALL_CHECK then return true end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local origin = camera.CFrame.Position
+    local dir    = hrp.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = { player.Character, char }
+    return Workspace:Raycast(origin, dir, params) == nil
+end
+
+local function getClosestToCrosshair()
+    local closest, shortest = nil, math.huge
+    local center = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character and isEnemy(plr) then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and hrp then
+                local sp, onScreen = camera:WorldToViewportPoint(hrp.Position)
+                if onScreen then
+                    local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if dist < Settings.FOV_RADIUS and isVisible(plr.Character) and dist < shortest then
+                        closest  = plr
+                        shortest = dist
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- ══════════════════════════════════════════
+--  KEY HELPERS
+-- ══════════════════════════════════════════
+local KC = {
+    W     = Enum.KeyCode.W,
+    A     = Enum.KeyCode.A,
+    S     = Enum.KeyCode.S,
+    D     = Enum.KeyCode.D,
+    Space = Enum.KeyCode.Space,
+}
+local ks = { W = false, A = false, S = false, D = false }
+
+local function sk(down, key)
+    pcall(VirtualInputManager.SendKeyEvent, VirtualInputManager, down, key, false, game)
+end
+
+local function releaseAll()
+    for n, p in pairs(ks) do
+        if p then sk(false, KC[n]); ks[n] = false end
+    end
+end
+
+local function fireKeys(dir)
+    if not dir or dir.Magnitude < 0.01 then releaseAll() return end
+    local d = Vector3.new(dir.X, 0, dir.Z)
+    if d.Magnitude < 0.001 then releaseAll() return end
+    d = d.Unit
+
+    local cf = camera.CFrame
+    local fw = Vector3.new(cf.LookVector.X,  0, cf.LookVector.Z)
+    local rt = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+    fw = fw.Magnitude > 0.001 and fw.Unit or Vector3.new(0, 0, -1)
+    rt = rt.Magnitude > 0.001 and rt.Unit or Vector3.new(1, 0,  0)
+
+    local f, r = d:Dot(fw), d:Dot(rt)
+    local T    = 0.02
+
+    if     f >  T then if not ks.W then sk(true, KC.W) ks.W=true  end  if ks.S then sk(false,KC.S) ks.S=false end
+    elseif f < -T then if not ks.S then sk(true, KC.S) ks.S=true  end  if ks.W then sk(false,KC.W) ks.W=false end
+    else                if ks.W    then sk(false,KC.W) ks.W=false end   if ks.S then sk(false,KC.S) ks.S=false end end
+
+    if     r >  T then if not ks.D then sk(true, KC.D) ks.D=true  end  if ks.A then sk(false,KC.A) ks.A=false end
+    elseif r < -T then if not ks.A then sk(true, KC.A) ks.A=true  end  if ks.D then sk(false,KC.D) ks.D=false end
+    else                if ks.D    then sk(false,KC.D) ks.D=false end   if ks.A then sk(false,KC.A) ks.A=false end end
+end
+
+local lastJump = 0
+local function doJump()
+    local t = os.clock()
+    if t - lastJump < 0.15 then return end
+    lastJump = t
+    sk(true,  KC.Space)
+    task.delay(0.04, function() sk(false, KC.Space) end)
+end
+
+-- ══════════════════════════════════════════
+--  AUTO SHOOT
+-- ══════════════════════════════════════════
+local lastShot = 0
+local function autoShoot()
+    if not Settings.AUTO_SHOOT or not Settings.AUTOPLAY then return end
+    if not aimbotTarget or not aimbotTarget.Character then return end
+    local now = os.clock()
+    if now - lastShot < Settings.SHOOT_COOLDOWN then return end
+    lastShot = now
     pcall(function()
-        local mt = getrawmetatable(v)
-        setreadonly(mt, false)
-        local oldFire = mt.FireServer
-        mt.FireServer = function(self, ...)
-            if self == v then return end
-            return oldFire(self, ...)
-        end
-        setreadonly(mt, true)
-    end)
-    print("[Tsurla AC] Hooked remote: " .. v.Name)
-end
-
-local function scanAndDestroy(obj)
-    for _, v in ipairs(obj:GetDescendants()) do
-        if v:IsA("LocalScript") or v:IsA("ModuleScript") then
-            if isAC(v.Name) then
-                pcall(function() v:Destroy() end)
-                print("[Tsurla AC] Destroyed: " .. v.Name)
-            end
-        elseif v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
-            if isAC(v.Name) then hookRemote(v) end
-        end
-    end
-end
-
-local acScanLoop = nil
-
-local function tryDisableAnticheats()
-    local containers = {
-        LocalPlayer.PlayerGui,
-        LocalPlayer.PlayerScripts,
-        LocalPlayer.Backpack,
-        game:GetService("StarterGui"),
-        game:GetService("StarterPack"),
-        game:GetService("ReplicatedStorage"),
-        workspace,
-    }
-    for _, c in ipairs(containers) do
-        pcall(function() scanAndDestroy(c) end)
-    end
-    pcall(function()
-        local mt = getrawmetatable(game)
-        local oldNamecall = mt.__namecall
-        setreadonly(mt, false)
-        mt.__namecall = function(self, ...)
-            local method = getnamecallmethod()
-            if method == "Kick" and self == LocalPlayer then
-                warn("[Tsurla AC] Blocked Kick")
-                return
-            end
-            if method == "TeleportToPlaceInstance" or method == "Teleport" then
-                warn("[Tsurla AC] Blocked Teleport")
-                return
-            end
-            return oldNamecall(self, ...)
-        end
-        setreadonly(mt, true)
-    end)
-    if acScanLoop then task.cancel(acScanLoop) end
-    acScanLoop = task.spawn(function()
-        while true do
-            task.wait(5)
-            for _, c in ipairs(containers) do
-                pcall(function() scanAndDestroy(c) end)
-            end
-        end
-    end)
-    print("[Tsurla AC] All layers active")
-end
-
--- ============================================================
--- GUI
--- ============================================================
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TsurlaHub"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.DisplayOrder = 999
-ScreenGui.Parent = LocalPlayer.PlayerGui
-
-local MenuToggle = Instance.new("ImageButton")
-MenuToggle.Size = UDim2.new(0, 120, 0, 50)
-MenuToggle.Position = UDim2.new(0, 10, 0, 10)
-MenuToggle.BackgroundTransparency = 1
-MenuToggle.Image = loadImage("menu")
-MenuToggle.ScaleType = Enum.ScaleType.Fit
-MenuToggle.ZIndex = 20
-MenuToggle.Parent = ScreenGui
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 420)
-MainFrame.Position = UDim2.new(0.5, -240, 0.5, -210)
-MainFrame.BackgroundTransparency = 1
-MainFrame.Visible = false
-MainFrame.Parent = ScreenGui
-
-local BgImg = Instance.new("ImageLabel")
-BgImg.Size = UDim2.new(1, 0, 1, 0)
-BgImg.BackgroundTransparency = 1
-BgImg.Image = loadImage("background")
-BgImg.ScaleType = Enum.ScaleType.Stretch
-BgImg.ZIndex = 1
-BgImg.Parent = MainFrame
-
-local dragging, dragInput, dragStart, startPos
-BgImg.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true; dragStart = input.Position; startPos = MainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
+        task.delay(0.05, function()
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
         end)
-    end
-end)
-BgImg.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local d = input.Position - dragStart
-        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+d.X, startPos.Y.Scale, startPos.Y.Offset+d.Y)
-    end
-end)
-
-local MainTabBtn = Instance.new("ImageButton")
-MainTabBtn.Size = UDim2.new(0, 155, 0, 58)
-MainTabBtn.Position = UDim2.new(0, 8, 0, 8)
-MainTabBtn.BackgroundTransparency = 1
-MainTabBtn.Image = loadImage("main")
-MainTabBtn.ScaleType = Enum.ScaleType.Fit
-MainTabBtn.ZIndex = 5
-MainTabBtn.Parent = MainFrame
-
-local OtherTabBtn = Instance.new("ImageButton")
-OtherTabBtn.Size = UDim2.new(0, 155, 0, 58)
-OtherTabBtn.Position = UDim2.new(0, 170, 0, 8)
-OtherTabBtn.BackgroundTransparency = 1
-OtherTabBtn.Image = loadImage("other")
-OtherTabBtn.ScaleType = Enum.ScaleType.Fit
-OtherTabBtn.ZIndex = 5
-OtherTabBtn.Parent = MainFrame
-
--- MAIN SECTION
-local MainSection = Instance.new("Frame")
-MainSection.Size = UDim2.new(1,-16,0,330)
-MainSection.Position = UDim2.new(0,8,0,72)
-MainSection.BackgroundTransparency = 1
-MainSection.Visible = true
-MainSection.ZIndex = 3
-MainSection.Parent = MainFrame
-
-local DesyncBtn = Instance.new("ImageButton")
-DesyncBtn.Size = UDim2.new(0, 430, 0, 72)
-DesyncBtn.Position = UDim2.new(0, 8, 0, 8)
-DesyncBtn.BackgroundTransparency = 1
-DesyncBtn.Image = loadImage("desyncOff")
-DesyncBtn.ScaleType = Enum.ScaleType.Fit
-DesyncBtn.ZIndex = 5
-DesyncBtn.Parent = MainSection
-
-DesyncBtn.MouseButton1Click:Connect(function()
-    desyncOn = not desyncOn
-    if desyncOn then
-        DesyncBtn.Image = loadImage("desyncOn")
-        task.spawn(enableDesync)
-    else
-        disableDesync()
-        DesyncBtn.Image = loadImage("desyncOff")
-    end
-end)
-
-local AnimBtn = Instance.new("ImageButton")
-AnimBtn.Size = UDim2.new(0, 430, 0, 85)
-AnimBtn.Position = UDim2.new(0, 8, 0, 92)
-AnimBtn.BackgroundTransparency = 1
-AnimBtn.Image = loadImage("animOff")
-AnimBtn.ScaleType = Enum.ScaleType.Fit
-AnimBtn.ZIndex = 5
-AnimBtn.Parent = MainSection
-
-AnimBtn.MouseButton1Click:Connect(function()
-    animsDisabled = not animsDisabled
-    if animsDisabled then
-        disableAnims()
-        AnimBtn.Image = loadImage("animOn")
-    else
-        enableAnims()
-        AnimBtn.Image = loadImage("animOff")
-    end
-end)
-
-local ACBtn = Instance.new("TextButton")
-ACBtn.Size = UDim2.new(0, 430, 0, 52)
-ACBtn.Position = UDim2.new(0, 8, 0, 192)
-ACBtn.BackgroundColor3 = Color3.fromRGB(55, 58, 90)
-ACBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ACBtn.Text = "⚡  Bypass Anticheats"
-ACBtn.Font = Enum.Font.GothamBold
-ACBtn.TextSize = 16
-ACBtn.ZIndex = 5
-ACBtn.Parent = MainSection
-Instance.new("UICorner", ACBtn).CornerRadius = UDim.new(0, 10)
-local ACStroke = Instance.new("UIStroke")
-ACStroke.Color = Color3.fromRGB(100, 105, 160)
-ACStroke.Thickness = 1.5
-ACStroke.Parent = ACBtn
-
-ACBtn.MouseButton1Click:Connect(function()
-    ACBtn.Text = "⏳  Working..."
-    ACBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 70)
-    task.spawn(function()
-        tryDisableAnticheats()
-        task.wait(1)
-        ACBtn.Text = "✅  Active (auto-scanning)"
-        ACBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
     end)
-end)
-
--- OTHER SECTION
-local OtherSection = Instance.new("Frame")
-OtherSection.Size = UDim2.new(1,-16,0,330)
-OtherSection.Position = UDim2.new(0,8,0,72)
-OtherSection.BackgroundTransparency = 1
-OtherSection.Visible = false
-OtherSection.ZIndex = 3
-OtherSection.Parent = MainFrame
-
-local WsImg = Instance.new("ImageLabel")
-WsImg.Size = UDim2.new(0, 290, 0, 65)
-WsImg.Position = UDim2.new(0, 8, 0, 8)
-WsImg.BackgroundTransparency = 1
-WsImg.Image = loadImage("walkspeed")
-WsImg.ScaleType = Enum.ScaleType.Fit
-WsImg.ZIndex = 5
-WsImg.Parent = OtherSection
-
-local WalkBox = Instance.new("Frame")
-WalkBox.Size = UDim2.new(0, 100, 0, 46)
-WalkBox.Position = UDim2.new(1, -115, 0, 16)
-WalkBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
-WalkBox.BorderSizePixel = 0
-WalkBox.ZIndex = 5
-WalkBox.Parent = OtherSection
-Instance.new("UICorner", WalkBox).CornerRadius = UDim.new(0, 8)
-local wbs = Instance.new("UIStroke")
-wbs.Color = Color3.fromRGB(150, 155, 210)
-wbs.Thickness = 2
-wbs.Parent = WalkBox
-
-local WalkInput = Instance.new("TextBox")
-WalkInput.Size = UDim2.new(1,0,1,0)
-WalkInput.BackgroundTransparency = 1
-WalkInput.TextColor3 = Color3.fromRGB(255,255,255)
-WalkInput.Text = tostring(Humanoid.WalkSpeed)
-WalkInput.Font = Enum.Font.GothamBlack
-WalkInput.TextSize = 20
-WalkInput.ClearTextOnFocus = false
-WalkInput.ZIndex = 6
-WalkInput.Parent = WalkBox
-WalkInput.FocusLost:Connect(function(e)
-    if e then local v = tonumber(WalkInput.Text) if v then Humanoid.WalkSpeed = v end end
-end)
-
-local JpImg = Instance.new("ImageLabel")
-JpImg.Size = UDim2.new(0, 290, 0, 65)
-JpImg.Position = UDim2.new(0, 8, 0, 95)
-JpImg.BackgroundTransparency = 1
-JpImg.Image = loadImage("jumppower")
-JpImg.ScaleType = Enum.ScaleType.Fit
-JpImg.ZIndex = 5
-JpImg.Parent = OtherSection
-
-local JumpBox = Instance.new("Frame")
-JumpBox.Size = UDim2.new(0, 100, 0, 46)
-JumpBox.Position = UDim2.new(1, -115, 0, 103)
-JumpBox.BackgroundColor3 = Color3.fromRGB(50, 53, 80)
-JumpBox.BorderSizePixel = 0
-JumpBox.ZIndex = 5
-JumpBox.Parent = OtherSection
-Instance.new("UICorner", JumpBox).CornerRadius = UDim.new(0, 8)
-local jbs = Instance.new("UIStroke")
-jbs.Color = Color3.fromRGB(150, 155, 210)
-jbs.Thickness = 2
-jbs.Parent = JumpBox
-
-local JumpInput = Instance.new("TextBox")
-JumpInput.Size = UDim2.new(1,0,1,0)
-JumpInput.BackgroundTransparency = 1
-JumpInput.TextColor3 = Color3.fromRGB(255,255,255)
-JumpInput.Text = tostring(Humanoid.JumpPower)
-JumpInput.Font = Enum.Font.GothamBlack
-JumpInput.TextSize = 20
-JumpInput.ClearTextOnFocus = false
-JumpInput.ZIndex = 6
-JumpInput.Parent = JumpBox
-JumpInput.FocusLost:Connect(function(e)
-    if e then local v = tonumber(JumpInput.Text) if v then Humanoid.JumpPower = v end end
-end)
-
--- TAB SWITCH
-local function switchSection(sec)
-    MainSection.Visible = sec == "main"
-    OtherSection.Visible = sec == "other"
-    MainTabBtn.ImageTransparency = sec == "main" and 0 or 0.45
-    OtherTabBtn.ImageTransparency = sec == "other" and 0 or 0.45
 end
-MainTabBtn.MouseButton1Click:Connect(function() switchSection("main") end)
-OtherTabBtn.MouseButton1Click:Connect(function() switchSection("other") end)
-switchSection("main")
 
-local guiOpen = false
-MenuToggle.MouseButton1Click:Connect(function()
-    guiOpen = not guiOpen
-    MainFrame.Visible = guiOpen
-end)
+-- ══════════════════════════════════════════
+--  JUKE
+-- ══════════════════════════════════════════
+local jukeActive   = false
+local jukeCooldown = 0
 
--- RESPAWN HANDLER
-LocalPlayer.CharacterAdded:Connect(function(c)
-    Character = c
-    Humanoid = c:WaitForChild("Humanoid")
-    HRP = c:WaitForChild("HumanoidRootPart")
+local function doJuke()
+    if jukeActive then return end
+    local now = os.clock()
+    if now - jukeCooldown < 0.5 then return end
+    jukeCooldown = now
+    jukeActive   = true
+    releaseAll()
+    local dirs = { {"A"}, {"D"}, {"W","A"}, {"W","D"}, {"S","A"}, {"S","D"} }
+    local pick = dirs[math.random(1, #dirs)]
+    for _, k in ipairs(pick) do sk(true, KC[k]); ks[k] = true end
+    task.delay(0.25 + math.random() * 0.2, function()
+        releaseAll()
+        jukeActive = false
+    end)
+end
 
-    animsDisabled = false
-    if animConn then animConn:Disconnect() animConn = nil end
-    AnimBtn.Image = loadImage("animOff")
+local function checkJuke()
+    if not Settings.JUKE or not Settings.AUTOPLAY then return end
+    local myHRP = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if isEnemy(plr) and plr.Character then
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - myHRP.Position).Magnitude < Settings.JUKE_RANGE then
+                doJuke()
+                return
+            end
+        end
+    end
+end
 
-    if desyncOn then
-        cleanDesyncParts()
-        task.wait(0.5)
-        task.spawn(enableDesync)
+-- ══════════════════════════════════════════
+--  AUTO DODGE
+-- ══════════════════════════════════════════
+local CFG = {
+    DetectionRange    = 999,
+    HitboxPadding     = 6.5,
+    MinKnifeSpeed     = 0.1,
+    JumpHeightThresh  = 4.5,
+    FutureLookAhead   = 2.0,
+    ExtraBurstDist    = 9.0,
+    ExtraMaxBurstTime = 0.45,
+    DotFacing         = 0.0,
+    SweepDirs         = 70,
+    WalkSpeed         = 16,
+    SafeMargin        = 1.5,
+}
+
+local SWEEP = {}
+for i = 0, CFG.SweepDirs - 1 do
+    local a = (i / CFG.SweepDirs) * math.pi * 2
+    SWEEP[i + 1] = Vector3.new(math.cos(a), 0, math.sin(a))
+end
+
+local dodgeActive    = false
+local extraActive    = false
+local extraDir       = Vector3.new(1, 0, 0)
+local extraTargetPos = nil
+local extraStartT    = 0
+local lastDir        = Vector3.new(1, 0, 0)
+local charParts      = {}
+local charFeet       = {}
+local charHRP        = nil
+
+local HITBOX_NAMES = {
+    "Head","UpperTorso","LowerTorso","HumanoidRootPart","Torso",
+    "Left Arm","Right Arm","Left Leg","Right Leg",
+    "LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm",
+    "LeftHand","RightHand","LeftUpperLeg","RightUpperLeg",
+    "LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot",
+}
+local FEET_NAMES = { "LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg","Left Leg","Right Leg" }
+
+local function rebuildCache(char)
+    charParts, charFeet = {}, {}
+    charHRP = char:FindFirstChild("HumanoidRootPart")
+    for _, n in ipairs(HITBOX_NAMES) do
+        local p = char:FindFirstChild(n)
+        if p and p:IsA("BasePart") then charParts[#charParts + 1] = p end
+    end
+    for _, n in ipairs(FEET_NAMES) do
+        local p = char:FindFirstChild(n)
+        if p and p:IsA("BasePart") then charFeet[#charFeet + 1] = p end
+    end
+end
+
+local function getFeetY()
+    local lo = math.huge
+    for _, p in ipairs(charFeet) do if p.Position.Y < lo then lo = p.Position.Y end end
+    return lo == math.huge and (charHRP and charHRP.Position.Y - 2.5 or 0) or lo
+end
+
+local function clearanceForDir(dir, hrpPos, th)
+    local mt = math.min(th.t, 0.5)
+    local fx  = hrpPos.X + dir.X * CFG.WalkSpeed * mt
+    local fz  = hrpPos.Z + dir.Z * CFG.WalkSpeed * mt
+    local ox, oz = th.pos.X, th.pos.Z
+    local dx, dz = th.vd2.X, th.vd2.Z
+    local ex, ez = fx - ox, fz - oz
+    local proj   = math.max(0, ex * dx + ez * dz)
+    local cx, cz = ox + dx * proj, oz + dz * proj
+    local rx, rz = fx - cx, fz - cz
+    return math.sqrt(rx * rx + rz * rz)
+end
+
+local function bestDodge(hrpPos, threats)
+    if #threats == 0 then return nil end
+    local safe   = CFG.HitboxPadding * CFG.SafeMargin
+    local bestD, bestS = nil, -math.huge
+
+    local function scoreDir(dir)
+        local minC, total = math.huge, 0
+        for _, th in ipairs(threats) do
+            local c = clearanceForDir(dir, hrpPos, th)
+            if c < minC then minC = c end
+            total = total + (c >= safe and c * th.urgency or -(safe - c) * 20 * th.urgency)
+        end
+        if minC < CFG.HitboxPadding then return -math.huge end
+        return total
     end
 
-    task.wait(0.1)
-    local ws = tonumber(WalkInput.Text)
-    local jp = tonumber(JumpInput.Text)
-    if ws then Humanoid.WalkSpeed = ws end
-    if jp then Humanoid.JumpPower = jp end
+    for _, dir in ipairs(SWEEP) do
+        local s = scoreDir(dir)
+        if s > bestS then bestS = s; bestD = dir end
+    end
+    for _, th in ipairs(threats) do
+        for _, dir in ipairs({ th.pA, th.pB, th.aw, th.bestPerp }) do
+            if dir and dir.Magnitude > 0.01 then
+                local s = scoreDir(dir.Unit)
+                if s > bestS then bestS = s; bestD = dir.Unit end
+            end
+        end
+    end
+    if not bestD or bestS == -math.huge then
+        bestS = -math.huge
+        for _, dir in ipairs(SWEEP) do
+            local minC = math.huge
+            for _, th in ipairs(threats) do
+                local c = clearanceForDir(dir, hrpPos, th)
+                if c < minC then minC = c end
+            end
+            if minC > bestS then bestS = minC; bestD = dir end
+        end
+    end
+    return bestD
+end
+
+local function checkThreat(part, data, hrpPos, feetY)
+    local vel   = data.vel
+    local speed = vel.Magnitude
+    if speed < CFG.MinKnifeSpeed then return nil end
+    local pos = part.Position
+    local toP = hrpPos - pos
+    local dist = toP.Magnitude
+    if dist > CFG.DetectionRange then return nil end
+    if dist > 0.001 and toP:Dot(vel) / (dist * speed) < CFG.DotFacing then return nil end
+
+    local pad  = CFG.HitboxPadding
+    local maxT = CFG.FutureLookAhead
+    local a    = vel:Dot(vel)
+    if a < 1e-10 then return nil end
+    local inv2a = 1 / (2 * a)
+    local bestT, bestPart = math.huge, nil
+
+    for _, hp in ipairs(charParts) do
+        local oc = pos - hp.Position
+        local b  = 2 * oc:Dot(vel)
+        local c  = oc:Dot(oc) - pad * pad
+        local disc = b * b - 4 * a * c
+        if disc >= 0 then
+            local sq = math.sqrt(disc)
+            local t  = (-b - sq) * inv2a
+            if t < 0 then t = (-b + sq) * inv2a end
+            if t >= 0 and t <= maxT and t < bestT then bestT = t; bestPart = hp end
+        end
+    end
+    if not bestPart then return nil end
+
+    local kp  = pos + vel * bestT
+    local vd2 = Vector3.new(vel.X, 0, vel.Z)
+    vd2 = vd2.Magnitude > 0.001 and vd2.Unit or Vector3.new(1, 0, 0)
+    local pA = Vector3.new(-vd2.Z, 0,  vd2.X)
+    local pB = Vector3.new( vd2.Z, 0, -vd2.X)
+    local aw = Vector3.new(hrpPos.X - kp.X, 0, hrpPos.Z - kp.Z)
+    aw = aw.Magnitude > 0.01 and aw.Unit or -vd2
+    local bp = pA:Dot(aw) >= pB:Dot(aw) and pA or pB
+
+    return {
+        t        = bestT,
+        kp       = kp,
+        vel      = vel,
+        pos      = pos,
+        speed    = speed,
+        pA       = pA,
+        pB       = pB,
+        bestPerp = bp,
+        aw       = aw,
+        vd2      = vd2,
+        needJump = (kp.Y <= feetY + CFG.JumpHeightThresh) and bestT < 0.5,
+        urgency  = 1 / (bestT + 0.01),
+    }
+end
+
+local knifeSet  = {}
+local knifeData = {}
+local knifeList = {}
+
+local function isKnifeName(n)
+    local l = n:lower()
+    return l:find("knife") or l:find("projectile") or l:find("throw")
+        or l:find("shuriken") or l:find("bullet") or l:find("axe")
+        or l:find("rock") or l:find("spear") or l:find("dart")
+        or l:find("sword") or l:find("star") or l:find("orb")
+        or l:find("arrow") or l:find("shard") or l:find("bolt")
+end
+
+local function spawnDodge(vel, knifePos)
+    if not Settings.AUTO_DODGE or not Settings.AUTOPLAY then return end
+    local hrp = charHRP
+    if not hrp then return end
+    if vel.Magnitude < CFG.MinKnifeSpeed then return end
+    local hrpPos = hrp.Position
+    local vFlat  = Vector3.new(vel.X, 0, vel.Z)
+    if vFlat.Magnitude < 0.001 then return end
+    vFlat = vFlat.Unit
+    local away = Vector3.new(hrpPos.X - knifePos.X, 0, hrpPos.Z - knifePos.Z)
+    away = away.Magnitude > 0.01 and away.Unit or -vFlat
+    local pA = Vector3.new(-vFlat.Z, 0,  vFlat.X)
+    local pB = Vector3.new( vFlat.Z, 0, -vFlat.X)
+    local bp = pA:Dot(away) >= pB:Dot(away) and pA or pB
+    local distToPlayer = (hrpPos - knifePos).Magnitude
+    local estimatedT   = math.max(0.05, distToPlayer / math.max(vel.Magnitude, 1))
+    local fakeThreat = {
+        t = estimatedT, kp = knifePos + vel * estimatedT,
+        vel = vel, pos = knifePos, speed = vel.Magnitude,
+        pA = pA, pB = pB, bestPerp = bp, aw = away, vd2 = vFlat,
+        urgency = 1 / (estimatedT + 0.01),
+    }
+    local dodgeDir = bestDodge(hrpPos, { fakeThreat }) or bp
+    lastDir     = dodgeDir
+    dodgeActive = true
+    extraActive = false
+    extraTargetPos = nil
+    fireKeys(dodgeDir)
+    if knifePos.Y <= getFeetY() + CFG.JumpHeightThresh then doJump() end
+end
+
+local function addKnife(obj)
+    if not isKnifeName(obj.Name) then return end
+    local part = obj:IsA("BasePart") and obj
+              or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
+    if not part or knifeSet[part] then return end
+    local vel  = part.Velocity
+    local pos  = part.Position
+    local data = { lastPos = pos, vel = vel, born = os.clock(), frames = 0 }
+    knifeSet[part]  = true
+    knifeData[part] = data
+    table.insert(knifeList, part)
+    spawnDodge(vel, pos)
+    local fired = false
+    local conn
+    conn = part:GetPropertyChangedSignal("Velocity"):Connect(function()
+        if fired or not knifeSet[part] then conn:Disconnect() return end
+        local v = part.Velocity
+        if v.Magnitude > 0.5 then
+            fired    = true
+            data.vel = v
+            spawnDodge(v, part.Position)
+            conn:Disconnect()
+        end
+    end)
+    task.defer(function()
+        if not knifeSet[part] then return end
+        local v = part.Velocity
+        if v.Magnitude > data.vel.Magnitude * 0.5 then
+            data.vel = v
+            if not fired then spawnDodge(v, part.Position) end
+        end
+    end)
+end
+
+local function removeKnife(obj)
+    local part = obj:IsA("BasePart") and obj
+              or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
+    if part and knifeSet[part] then
+        knifeSet[part]  = nil
+        knifeData[part] = nil
+        for i, v in ipairs(knifeList) do
+            if v == part then table.remove(knifeList, i) break end
+        end
+    end
+end
+
+local function connectFolder(folder)
+    for _, obj in ipairs(folder:GetDescendants()) do addKnife(obj) end
+    folder.DescendantAdded:Connect(addKnife)
+    folder.DescendantRemoving:Connect(removeKnife)
+end
+
+task.spawn(function()
+    local names = { "ProjectilesAndDebris","Projectiles","Debris","Knives","Throwables","Bullets" }
+    for _, n in ipairs(names) do
+        local f = Workspace:FindFirstChild(n)
+        if f then connectFolder(f) return end
+    end
+    connectFolder(Workspace)
 end)
 
-print("[Tsurla Hub] Loaded!")
+local function updateKnives(dt)
+    local i = 1
+    while i <= #knifeList do
+        local part = knifeList[i]
+        if not part or not part.Parent then
+            if part then knifeSet[part] = nil; knifeData[part] = nil end
+            table.remove(knifeList, i)
+        else
+            local d = knifeData[part]
+            if d and dt > 0 then
+                local np = part.Position
+                local dv = (np - d.lastPos) / dt
+                d.frames = (d.frames or 0) + 1
+                d.vel    = d.frames <= 2 and (dv * 0.3 + part.Velocity * 0.7)
+                                         or (dv * 0.88 + part.Velocity * 0.12)
+                d.lastPos = np
+            end
+            i = i + 1
+        end
+    end
+end
+
+-- ══════════════════════════════════════════
+--  GUI — AUTOPLAY BUTTON WITH PNGs + SMALL PANEL
+-- ══════════════════════════════════════════
+local mainGui = Instance.new("ScreenGui")
+mainGui.Name          = "MainGui"
+mainGui.ResetOnSpawn  = false
+mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+mainGui.Parent        = playerGui
+
+-- Autoplay image button
+local autoplayBtn = Instance.new("ImageButton")
+autoplayBtn.Name            = "AutoplayBtn"
+autoplayBtn.Size            = UDim2.new(0, 200, 0, 57)
+autoplayBtn.Position        = UDim2.new(0.5, -100, 0, 20)
+autoplayBtn.BackgroundTransparency = 1
+autoplayBtn.Image           = Settings.AUTOPLAY and IMG_ON or IMG_OFF
+autoplayBtn.ScaleType       = Enum.ScaleType.Fit
+autoplayBtn.Active          = true
+autoplayBtn.Parent          = mainGui
+
+-- Small status panel
+local panel = Instance.new("Frame")
+panel.Name                = "Panel"
+panel.Size                = UDim2.new(0, 180, 0, 170)
+panel.Position            = UDim2.new(0, 15, 0.35, 0)
+panel.BackgroundColor3    = Color3.fromRGB(18, 18, 28)
+panel.BackgroundTransparency = 0.05
+panel.BorderSizePixel     = 0
+panel.Active              = true
+panel.Draggable           = true
+panel.Parent              = mainGui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 10)
+
+local function makeLabel(parent, text, yOff, color)
+    local l = Instance.new("TextLabel")
+    l.Size                = UDim2.new(1, -10, 0, 22)
+    l.Position            = UDim2.new(0, 5, 0, yOff)
+    l.BackgroundTransparency = 1
+    l.Text                = text
+    l.TextColor3          = color or Color3.new(1,1,1)
+    l.TextScaled          = true
+    l.Font                = Enum.Font.GothamBold
+    l.TextXAlignment      = Enum.TextXAlignment.Left
+    l.Parent              = parent
+    return l
+end
+
+local function makeBtn(parent, text, yOff, color)
+    local b = Instance.new("TextButton")
+    b.Size               = UDim2.new(1, -20, 0, 24)
+    b.Position           = UDim2.new(0, 10, 0, yOff)
+    b.BackgroundColor3   = color or Color3.fromRGB(60,60,80)
+    b.TextColor3         = Color3.new(1,1,1)
+    b.Text               = text
+    b.TextScaled         = true
+    b.Font               = Enum.Font.GothamBold
+    b.BorderSizePixel    = 0
+    b.Parent             = parent
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    return b
+end
+
+local titleLbl  = makeLabel(panel, "⚡ SCRIPT v2",    5,  Color3.fromRGB(180,180,255))
+local aimbotBtn = makeBtn  (panel, "Aimbot: ON",     30,  Color3.fromRGB(50,180,50))
+local espBtn    = makeBtn  (panel, "ESP: ON",        58,  Color3.fromRGB(100,50,160))
+local dodgeBtn  = makeBtn  (panel, "AutoDodge: ON",  86,  Color3.fromRGB(50,80,180))
+local shootBtn  = makeBtn  (panel, "AutoShoot: ON",  114, Color3.fromRGB(180,80,50))
+local jukeBtn   = makeBtn  (panel, "Juke: ON",       142, Color3.fromRGB(160,130,30))
+
+-- FOV circle
+local fovGui = Instance.new("ScreenGui")
+fovGui.Name         = "FovGui"
+fovGui.ResetOnSpawn = false
+fovGui.Parent       = playerGui
+
+local fovCircle = Instance.new("Frame")
+fovCircle.Size                  = UDim2.new(0, Settings.FOV_RADIUS*2, 0, Settings.FOV_RADIUS*2)
+fovCircle.AnchorPoint           = Vector2.new(0.5, 0.5)
+fovCircle.Position              = UDim2.new(0.5, 0, 0.5, 0)
+fovCircle.BackgroundColor3      = Color3.fromRGB(255, 0, 0)
+fovCircle.BackgroundTransparency = 0.9
+fovCircle.BorderSizePixel       = 0
+fovCircle.Visible               = Settings.AIMBOT
+fovCircle.Parent                = fovGui
+Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+
+-- Button callbacks
+autoplayBtn.MouseButton1Click:Connect(function()
+    Settings.AUTOPLAY = not Settings.AUTOPLAY
+    autoplayBtn.Image = Settings.AUTOPLAY and IMG_ON or IMG_OFF
+    if not Settings.AUTOPLAY then releaseAll() end
+end)
+
+aimbotBtn.MouseButton1Click:Connect(function()
+    Settings.AIMBOT = not Settings.AIMBOT
+    aimbotBtn.Text  = "Aimbot: " .. (Settings.AIMBOT and "ON" or "OFF")
+    aimbotBtn.BackgroundColor3 = Settings.AIMBOT and Color3.fromRGB(50,180,50) or Color3.fromRGB(160,50,50)
+    fovCircle.Visible = Settings.AIMBOT
+    if not Settings.AIMBOT then
+        UserInputService.MouseBehavior   = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+        MOUSE_LOCKED = false
+    end
+end)
+
+espBtn.MouseButton1Click:Connect(function()
+    Settings.ESP = not Settings.ESP
+    espBtn.Text  = "ESP: " .. (Settings.ESP and "ON" or "OFF")
+    espBtn.BackgroundColor3 = Settings.ESP and Color3.fromRGB(100,50,160) or Color3.fromRGB(160,50,50)
+    updateESP()
+end)
+
+dodgeBtn.MouseButton1Click:Connect(function()
+    Settings.AUTO_DODGE = not Settings.AUTO_DODGE
+    dodgeBtn.Text = "AutoDodge: " .. (Settings.AUTO_DODGE and "ON" or "OFF")
+    dodgeBtn.BackgroundColor3 = Settings.AUTO_DODGE and Color3.fromRGB(50,80,180) or Color3.fromRGB(160,50,50)
+end)
+
+shootBtn.MouseButton1Click:Connect(function()
+    Settings.AUTO_SHOOT = not Settings.AUTO_SHOOT
+    shootBtn.Text = "AutoShoot: " .. (Settings.AUTO_SHOOT and "ON" or "OFF")
+    shootBtn.BackgroundColor3 = Settings.AUTO_SHOOT and Color3.fromRGB(180,80,50) or Color3.fromRGB(160,50,50)
+end)
+
+jukeBtn.MouseButton1Click:Connect(function()
+    Settings.JUKE = not Settings.JUKE
+    jukeBtn.Text  = "Juke: " .. (Settings.JUKE and "ON" or "OFF")
+    jukeBtn.BackgroundColor3 = Settings.JUKE and Color3.fromRGB(160,130,30) or Color3.fromRGB(160,50,50)
+end)
+
+-- ══════════════════════════════════════════
+--  CHARACTER EVENTS
+-- ══════════════════════════════════════════
+local function onCharAdded(char)
+    task.wait(0.3)
+    rebuildCache(char)
+    dodgeActive = false; extraActive = false; extraTargetPos = nil
+    releaseAll()
+    camera.CameraType = Enum.CameraType.Custom
+    UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
+    UserInputService.MouseIconEnabled = true
+    MOUSE_LOCKED = false
+end
+
+player.CharacterAdded:Connect(onCharAdded)
+if player.Character then
+    task.spawn(function() task.wait(0.1) rebuildCache(player.Character) end)
+end
+
+-- ══════════════════════════════════════════
+--  MAIN LOOP
+-- ══════════════════════════════════════════
+local lastT = os.clock()
+local fc    = 0
+
+RunService.RenderStepped:Connect(function()
+    local now = os.clock()
+    local dt  = now - lastT
+    lastT     = now
+
+    updateKnives(dt)
+    updateESP()
+
+    -- AIMBOT
+    if Settings.AIMBOT and Settings.AUTOPLAY then
+        aimbotTarget = getClosestToCrosshair()
+        if aimbotTarget and aimbotTarget.Character then
+            local hrp = aimbotTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                camera.CFrame = CFrame.new(camera.CFrame.Position, hrp.Position)
+                if not MOUSE_LOCKED then
+                    UserInputService.MouseBehavior    = Enum.MouseBehavior.LockCenter
+                    UserInputService.MouseIconEnabled = false
+                    MOUSE_LOCKED = true
+                end
+                autoShoot()
+            end
+        else
+            aimbotTarget = nil
+            if MOUSE_LOCKED then
+                UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
+                UserInputService.MouseIconEnabled = true
+                MOUSE_LOCKED = false
+            end
+        end
+    elseif MOUSE_LOCKED then
+        UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+        MOUSE_LOCKED = false
+    end
+
+    if not Settings.AUTOPLAY then return end
+
+    -- JUKE check every 6 frames
+    fc = fc + 1
+    if fc % 6 == 0 then checkJuke() end
+
+    -- AUTO DODGE
+    if not Settings.AUTO_DODGE then return end
+
+    local char = player.Character
+    if not char then releaseAll() return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then releaseAll() return end
+    if #charParts == 0 then rebuildCache(char) end
+    if #charParts == 0 then return end
+
+    local hrpPos = hrp.Position
+    local feetY  = getFeetY()
+    local threats = {}
+
+    for _, part in ipairs(knifeList) do
+        local data = knifeData[part]
+        if data and part.Parent then
+            local th = checkThreat(part, data, hrpPos, feetY)
+            if th then threats[#threats + 1] = th end
+        end
+    end
+    if #threats > 1 then table.sort(threats, function(a,b) return a.t < b.t end) end
+
+    if #threats > 0 then
+        local dodgeDir = bestDodge(hrpPos, threats)
+        if dodgeDir then lastDir = dodgeDir; fireKeys(dodgeDir) end
+        for i = 1, math.min(2, #threats) do
+            if threats[i].needJump then doJump() break end
+        end
+        dodgeActive    = true
+        extraActive    = false
+        extraTargetPos = nil
+    elseif dodgeActive then
+        dodgeActive    = false
+        extraActive    = true
+        extraDir       = lastDir
+        extraTargetPos = hrpPos + lastDir * CFG.ExtraBurstDist
+        extraStartT    = now
+        fireKeys(extraDir)
+    else
+        if extraActive then
+            local tgt = extraTargetPos or (hrpPos + extraDir * CFG.ExtraBurstDist)
+            local horiz = Vector3.new(hrpPos.X, 0, hrpPos.Z)
+            local tH    = Vector3.new(tgt.X,    0, tgt.Z)
+            if (horiz - tH).Magnitude > 0.35 and now < extraStartT + CFG.ExtraMaxBurstTime then
+                fireKeys(extraDir)
+            else
+                extraActive    = false
+                extraTargetPos = nil
+                releaseAll()
+            end
+        else
+            if not jukeActive then releaseAll() end
+        end
+    end
+end)
+
+-- ══════════════════════════════════════════
+--  NOTIFICATION
+-- ══════════════════════════════════════════
+task.wait(1)
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title   = "Script Loaded",
+        Text    = "Autoplay | Aimbot | ESP | Dodge | Shoot | Juke — Enemy=Murder",
+        Duration = 6,
+    })
+end)
+
+print("[Script] Loaded. Enemy = Murder team. Autoplay ON.")

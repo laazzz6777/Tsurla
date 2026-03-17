@@ -1,15 +1,3 @@
---[[
-╔══════════════════════════════════════════════════════════════════════════╗
-║          MASTER CONTROLLER v3.0  —  OMNI-STATE AUTONOMOUS AGENT         ║
-║  Neural-Heuristic Decision | MCTS Navigation | Global Entity Registry   ║
-║  Pixel-Perfect Aim (Camera) | Linear Projectile Physics | Adaptive      ║
-║  Target  : Any team whose name contains "murder" (case-insensitive)     ║
-║  Bullets : Instant, linear, zero gravity  |  Reload : 3.75 s            ║
-║  Knives  : Linear trajectory, time-delayed travel, no gravity arc       ║
-║  Aim     : Camera CFrame  |  Movement / Juke : Character via VIM        ║
-╚══════════════════════════════════════════════════════════════════════════╝
---]]
-
 -- ════════════════════════════════════════════════════════════════════════
 --  §1  SERVICES
 -- ════════════════════════════════════════════════════════════════════════
@@ -18,14 +6,13 @@ local RunService          = game:GetService("RunService")
 local UserInputService    = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local Workspace           = game:GetService("Workspace")
-local StarterGui          = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
 local isMobile    = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 -- ════════════════════════════════════════════════════════════════════════
---  §2  MASTER CONFIG  — every tunable in one place
+--  §2  MASTER CONFIG
 -- ════════════════════════════════════════════════════════════════════════
 local CFG = {
     -- ── System toggles ──────────────────────────────────────────────────
@@ -37,60 +24,55 @@ local CFG = {
     ESPEnabled          = true,
 
     -- ── Detection / range ───────────────────────────────────────────────
-    DetectionRange      = 999,       -- studs: maximum entity tracking range
-    FOVRadius           = 175,       -- pixels: aimbot screen-space FOV radius
-    MaxEngageRange      = 340,       -- studs: navigate toward enemy if farther
-    MeleeRange          = 5.2,       -- studs: trigger atomic orbit juke
-    EngageMoveRange     = 14,        -- studs: keep moving while engaging
+    DetectionRange      = 999,
+    MaxEngageRange      = 340,
+    MeleeRange          = 5.2,
+    EngageMoveRange     = 14,
 
     -- ── Combat ──────────────────────────────────────────────────────────
-    ReloadTime          = 3.75,      -- seconds: fixed reload / fire cooldown
-    HeadAimBias         = 0.88,      -- fraction: prefer head over torso (0–1)
-    InitialPingMs       = 65,        -- ms: starting ping estimate (auto-updates)
-
-    -- ── Aim ─────────────────────────────────────────────────────────────
-    --  Bullets are instant + linear: lead = ping only.
-    --  No gravity, no arc. Camera.CFrame snapped pixel-perfect each frame.
+    -- Bullets: INSTANT + LINEAR — zero gravity, zero travel time.
+    -- Aim directly at part.Position.  No lead, no prediction.
+    ReloadTime          = 2.50,      -- seconds (changed from 3.75 → 2.50)
 
     -- ── Movement ────────────────────────────────────────────────────────
-    WalkSpeed           = 16,        -- studs/s: default Roblox walk speed
-    JumpCooldown        = 0.15,      -- seconds between jumps
-    JumpHeightThreshold = 4.5,       -- studs Y-delta to trigger a jump
-    KeyThreshold        = 0.02,      -- WASD dot-product dead-zone
-    StuckWindow         = 1.8,       -- seconds of no displacement = stuck
-    StuckThreshold      = 0.35,      -- studs: displacement below = stuck
+    WalkSpeed           = 16,
+    JumpCooldown        = 0.15,
+    JumpHeightThreshold = 4.5,
+    KeyThreshold        = 0.02,
+    StuckWindow         = 1.8,
+    StuckThreshold      = 0.35,
 
     -- ── MCTS Navigation ─────────────────────────────────────────────────
-    MCTSInterval        = 0.40,      -- seconds between full tree searches
-    MCTSSimulations     = 14,        -- number of paths simulated per tick
-    MCTSDepth           = 6,         -- steps per simulation walk
-    MCTSStepSize        = 4.0,       -- studs per simulation step
+    MCTSInterval        = 0.40,
+    MCTSSimulations     = 14,
+    MCTSDepth           = 6,
+    MCTSStepSize        = 4.0,
 
-    -- ── Dodge (knives travel linearly, no gravity) ───────────────────────
-    MinProjectileSpeed  = 0.10,      -- studs/s: minimum threat velocity
-    FutureLookAhead     = 2.20,      -- seconds: collision prediction window
-    DotFacingThreshold  = 0.00,      -- cos angle: reject if knife not facing us
-    SweepDirs           = 128,       -- number of directions in dodge sweep
-    ExtraBurstDistance  = 9.0,       -- studs: momentum burst after dodge ends
-    ExtraMaxBurstTime   = 0.45,      -- seconds: max burst duration
-    HitboxPadding       = 6.5,       -- studs: threat sphere radius per part
-    SafeMarginMult      = 1.55,      -- multiplier for "safe" clearance
+    -- ── Dodge ───────────────────────────────────────────────────────────
+    MinProjectileSpeed  = 0.10,
+    FutureLookAhead     = 2.20,
+    DotFacingThreshold  = 0.00,
+    SweepDirs           = 128,
+    ExtraBurstDistance  = 9.0,
+    ExtraMaxBurstTime   = 0.45,
+    HitboxPadding       = 6.5,
+    SafeMarginMult      = 1.55,
 
     -- ── Wall check (low-medium strictness) ──────────────────────────────
-    WallCheckPoints     = 12,        -- atomic raycast count
-    WallCheckStrict     = 0.42,      -- fraction of visible points required
+    WallCheckPoints     = 12,
+    WallCheckStrict     = 0.42,      -- 42% of 12 points must be clear
 
     -- ── Learning ────────────────────────────────────────────────────────
-    LearningRate        = 0.026,     -- online weight update rate
+    LearningRate        = 0.026,
     WeightClampLo       = 0.10,
     WeightClampHi       = 4.20,
 
     -- ── Enemy filter ────────────────────────────────────────────────────
-    EnemyKeyword        = "murder",  -- case-insensitive substring match
+    EnemyKeyword        = "murder",  -- case-insensitive substring
 }
 
 -- ════════════════════════════════════════════════════════════════════════
---  §3  PRE-COMPUTED SWEEP DIRECTIONS  (128 flat unit vectors, xz plane)
+--  §3  PRE-COMPUTED SWEEP DIRECTIONS  (128 flat unit vectors)
 -- ════════════════════════════════════════════════════════════════════════
 local SWEEP = {}
 for _i = 0, CFG.SweepDirs - 1 do
@@ -99,16 +81,14 @@ for _i = 0, CFG.SweepDirs - 1 do
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §4  VIM  KEY  MANAGEMENT  (all input via VirtualInputManager only)
+--  §4  VIM KEY MANAGEMENT
 -- ════════════════════════════════════════════════════════════════════════
 local KC = {
-    W     = Enum.KeyCode.W,
-    A     = Enum.KeyCode.A,
-    S     = Enum.KeyCode.S,
-    D     = Enum.KeyCode.D,
+    W = Enum.KeyCode.W, A = Enum.KeyCode.A,
+    S = Enum.KeyCode.S, D = Enum.KeyCode.D,
     Space = Enum.KeyCode.Space,
 }
-local keyState = { W = false, A = false, S = false, D = false }
+local keyState = { W=false, A=false, S=false, D=false }
 
 local function sendKey(down, key)
     pcall(VirtualInputManager.SendKeyEvent, VirtualInputManager, down, key, false, game)
@@ -120,7 +100,8 @@ local function releaseAll()
     end
 end
 
--- fireKeys  — converts a world-space XZ direction into camera-relative WASD keys
+-- fireKeys: world-space XZ direction → camera-relative WASD.
+-- Movement is ALWAYS camera-relative (camera is the reference frame).
 local function fireKeys(dir)
     if not dir or dir.Magnitude < 0.001 then releaseAll(); return end
     local d = Vector3.new(dir.X, 0, dir.Z)
@@ -137,7 +118,6 @@ local function fireKeys(dir)
     local rDot = d:Dot(rt)
     local T    = CFG.KeyThreshold
 
-    -- Forward / Backward axis
     if fDot > T then
         if not keyState.W then sendKey(true,  KC.W); keyState.W = true  end
         if     keyState.S then sendKey(false, KC.S); keyState.S = false end
@@ -149,7 +129,6 @@ local function fireKeys(dir)
         if keyState.S then sendKey(false, KC.S); keyState.S = false end
     end
 
-    -- Right / Left axis
     if rDot > T then
         if not keyState.D then sendKey(true,  KC.D); keyState.D = true  end
         if     keyState.A then sendKey(false, KC.A); keyState.A = false end
@@ -159,6 +138,24 @@ local function fireKeys(dir)
     else
         if keyState.D then sendKey(false, KC.D); keyState.D = false end
         if keyState.A then sendKey(false, KC.A); keyState.A = false end
+    end
+end
+
+-- Orient camera to face a world-space direction (for navigation).
+-- Only the yaw (horizontal) component is adjusted so pitch stays natural.
+local function setCameraFacing(worldDir)
+    if not worldDir or worldDir.Magnitude < 0.01 then return end
+    local flat = Vector3.new(worldDir.X, 0, worldDir.Z)
+    if flat.Magnitude < 0.001 then return end
+    flat = flat.Unit
+    local camPos = Camera.CFrame.Position
+    -- Preserve camera height offset while pointing horizontally
+    local lookTarget = camPos + flat
+    -- Blend: 30% correction per frame so it pans smoothly, not snap
+    local currentLook = Camera.CFrame.LookVector
+    local blended     = (currentLook + flat * 0.30)
+    if blended.Magnitude > 0.001 then
+        Camera.CFrame = CFrame.new(camPos, camPos + blended.Unit)
     end
 end
 
@@ -172,10 +169,28 @@ local function doJump()
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §5  AUTO-SHOOT SYSTEM
---  Firing is VIM mouse-button simulation.
---  Bullets are instant and linear — aim directly at predicted point.
---  Reload = exactly CFG.ReloadTime seconds between shots.
+--  §5  PING  —  GetNetworkPing() * 2  (round-trip, seconds)
+--  LocalPlayer:GetNetworkPing() returns ONE-WAY trip in seconds.
+--  Multiply by 2 to match the Shift+F3 displayed round-trip value.
+--  We store it in seconds for internal use; display in ms.
+-- ════════════════════════════════════════════════════════════════════════
+local estimatedPingSeconds = 0.065   -- initial fallback (65 ms)
+
+local function updatePing()
+    local ok, val = pcall(function()
+        return LocalPlayer:GetNetworkPing()   -- returns seconds, one-way
+    end)
+    if ok and type(val) == "number" and val > 0 then
+        -- Round-trip = one-way * 2; smooth with 20% new sample weight
+        local rtt = val * 2
+        estimatedPingSeconds = estimatedPingSeconds * 0.80 + rtt * 0.20
+    end
+end
+
+-- ════════════════════════════════════════════════════════════════════════
+--  §6  AUTO-SHOOT SYSTEM
+--  Reload time = 2.5 seconds exactly.
+--  Firing simulates left-mouse click at viewport centre via VIM.
 -- ════════════════════════════════════════════════════════════════════════
 local lastShotTime = -999
 local reloadActive = false
@@ -185,11 +200,9 @@ local function canShoot()
 end
 
 local function getReloadFraction()
-    -- 0 = just fired (0 % done), 1 = fully reloaded
     return math.min(1.0, (os.clock() - lastShotTime) / CFG.ReloadTime)
 end
 
--- Simulate a left-mouse click at the exact screen center
 local function doShoot()
     if not CFG.AutoShootEnabled then return false end
     if not canShoot()           then return false end
@@ -198,11 +211,9 @@ local function doShoot()
     local cx = math.floor(vp.X * 0.5)
     local cy = math.floor(vp.Y * 0.5)
 
-    -- Mouse down
     pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true,  game, 1)
     end)
-    -- Mouse up  (~33 ms hold = one game frame)
     task.delay(0.033, function()
         pcall(function()
             VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
@@ -211,69 +222,34 @@ local function doShoot()
 
     lastShotTime = os.clock()
     reloadActive = true
-    task.delay(CFG.ReloadTime, function()
-        reloadActive = false
-    end)
+    task.delay(CFG.ReloadTime, function() reloadActive = false end)
     return true
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §6  ENEMY IDENTIFICATION
+--  §7  ENEMY IDENTIFICATION
 --  Primary   : team name contains "murder" (case-insensitive)
---  Secondary : different teams (for games with proper team assignment)
---  Fallback  : target everyone if no team system is detected
+--  Secondary : different teams
+--  Fallback  : everyone if no team system
 -- ════════════════════════════════════════════════════════════════════════
 local function isEnemy(plr)
     if not plr or plr == LocalPlayer then return false end
     if not plr.Parent then return false end
-
-    -- Primary: team name keyword check
     if plr.Team then
-        local tName = plr.Team.Name:lower()
-        if tName:find(CFG.EnemyKeyword) then return true end
+        if plr.Team.Name:lower():find(CFG.EnemyKeyword) then return true end
     end
-    -- Also check if LOCAL player is on a non-murder team and target is on murder
     if LocalPlayer.Team and plr.Team then
         return plr.Team ~= LocalPlayer.Team
     end
-    -- No team system: everyone is an enemy except self
-    if not plr.Team and not LocalPlayer.Team then
-        return true
-    end
+    if not plr.Team and not LocalPlayer.Team then return true end
     return false
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §7  PING ESTIMATION  (adaptive rolling average, 30-sample window)
--- ════════════════════════════════════════════════════════════════════════
-local pingHistory    = {}
-local estimatedPing  = CFG.InitialPingMs / 1000   -- seconds
-
-local function updatePingEstimate()
-    local ms = CFG.InitialPingMs
-    pcall(function()
-        local stats = game:GetService("Stats")
-        ms = stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    -- Clamp to sane range (0–800 ms)
-    ms = math.max(10, math.min(800, ms))
-    pingHistory[#pingHistory + 1] = ms
-    if #pingHistory > 30 then table.remove(pingHistory, 1) end
-    local sum = 0
-    for _, v in ipairs(pingHistory) do sum = sum + v end
-    estimatedPing = (sum / #pingHistory) / 1000
-end
-
--- ════════════════════════════════════════════════════════════════════════
 --  §8  GLOBAL ENTITY REGISTRY
---  Persistent memory for every tracked enemy.
---  Fields: pos, vel, health, maxHealth, lastCFrame, lastSeen, isVisible,
---          visFraction, peekHistory, avgVel, hitboxParts, threatScore,
---          wasVisible, hiddenSince, predictedPeekPos, damageTaken
 -- ════════════════════════════════════════════════════════════════════════
 local PEEK_HISTORY_CAP = 24
-
-local EntityRegistry = {}  -- keyed by Player object
+local EntityRegistry   = {}
 
 local function registryEnsure(plr)
     if not EntityRegistry[plr] then
@@ -300,7 +276,6 @@ local function registryEnsure(plr)
     return EntityRegistry[plr]
 end
 
--- Full per-enemy update called every 0.05 s
 local function registryUpdate(plr, dt)
     local char = plr.Character
     if not char then return end
@@ -312,20 +287,15 @@ local function registryUpdate(plr, dt)
     local oldPos = entry.pos
     local newPos = hrp.Position
 
-    -- Velocity: blend positional delta with Roblox AssemblyLinearVelocity
     local posVel = dt > 0 and (newPos - oldPos) / dt or entry.vel
-    local rbxVel = hrp.AssemblyLinearVelocity          -- accurate physics vel
-    -- Weighted blend: positional delta is smoother over walls
+    local rbxVel = hrp.AssemblyLinearVelocity
     entry.vel    = entry.vel * 0.50 + posVel * 0.30 + rbxVel * 0.20
-
-    -- Long-term average velocity for peek prediction
     entry.avgVel = entry.avgVel * 0.90 + entry.vel * 0.10
 
     entry.pos        = newPos
     entry.lastCFrame = hrp.CFrame
     entry.lastSeen   = os.clock()
 
-    -- Health tracking (detect damage taken)
     entry.prevHealth = entry.health
     entry.health     = hum.Health
     entry.maxHealth  = hum.MaxHealth
@@ -333,41 +303,32 @@ local function registryUpdate(plr, dt)
         entry.damageTaken = entry.damageTaken + (entry.prevHealth - entry.health)
     end
 
-    -- Peek history ring buffer
     local ph = entry.peekHistory
-    ph[#ph + 1] = { pos = newPos, t = os.clock(), vel = Vector3.new(entry.vel.X, 0, entry.vel.Z) }
+    ph[#ph + 1] = { pos = newPos, t = os.clock(),
+                    vel = Vector3.new(entry.vel.X, 0, entry.vel.Z) }
     if #ph > PEEK_HISTORY_CAP then table.remove(ph, 1) end
 
-    -- Rebuild hitbox parts (enemy's physical hitbox — every BasePart)
     local parts = {}
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then parts[#parts + 1] = p end
     end
     entry.hitboxParts = parts
 
-    -- Peek state machine
     entry.wasVisible = entry.isVisible
-    -- isVisible / visFraction are written by the LoS system in the main loop
 end
 
--- Linear prediction:  where will enemy be in `t` seconds?
--- Instant bullet → lead = estimatedPing only.
+-- Peek prediction: return last-known position or predicted re-emergence point.
+-- NOTE: prediction is for MOVEMENT/NAVIGATION only — NOT for aim (direct snap).
 local function predictEnemyPosition(plr, t)
     local entry = EntityRegistry[plr]
     if not entry then return nil end
-
-    local now = os.clock()
+    local now   = os.clock()
     local stale = now - entry.lastSeen
-
-    -- If very stale, return last known or predicted peek
     if stale > 5.0 then
         return entry.predictedPeekPos or entry.pos
     end
-
-    -- Base linear prediction (works perfectly for instant bullets — just ping lead)
+    -- Movement prediction for navigation only (t = small lookahead)
     local predicted = entry.pos + entry.vel * t
-
-    -- Peek prediction: enemy just went behind cover → predict re-emergence
     if not entry.isVisible and entry.wasVisible then
         local ph = entry.peekHistory
         if #ph >= 6 then
@@ -375,24 +336,16 @@ local function predictEnemyPosition(plr, t)
             local older   = ph[math.max(1, #ph - 6)]
             local ingress = recent.pos - older.pos
             if ingress.Magnitude > 0.4 then
-                -- Predict peek from the reverse of ingress direction
                 entry.predictedPeekPos = entry.pos - ingress.Unit * 1.8
             end
         end
-        -- While hidden, refine predicted peek with average velocity
-        if entry.predictedPeekPos then
-            return entry.predictedPeekPos
-        end
+        if entry.predictedPeekPos then return entry.predictedPeekPos end
     end
-
     return predicted
 end
 
--- Return (player, entry, dist) for the closest alive enemy
 local function getClosestEnemyToPos(fromPos)
-    local bestPlr   = nil
-    local bestEntry = nil
-    local bestDist  = math.huge
+    local bestPlr, bestEntry, bestDist = nil, nil, math.huge
     for plr, entry in pairs(EntityRegistry) do
         if isEnemy(plr) and plr.Character and entry.health > 0 then
             local d = (entry.pos - fromPos).Magnitude
@@ -407,28 +360,27 @@ local function getClosestEnemyToPos(fromPos)
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §9  LOCAL CHARACTER CACHE  (rebuilt on respawn and if invalid)
+--  §9  LOCAL CHARACTER CACHE
 -- ════════════════════════════════════════════════════════════════════════
-local charParts   = {}   -- all BasePart references
-local charFeet    = {}   -- foot/lower-leg parts for ground detection
-local charHRP     = nil  -- HumanoidRootPart reference
-local charHuman   = nil  -- Humanoid reference
+local charParts  = {}
+local charFeet   = {}
+local charHRP    = nil
+local charHuman  = nil
 
 local HITBOX_NAMES = {
-    "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart", "Torso",
-    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
-    "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
-    "LeftHand", "RightHand", "LeftUpperLeg", "RightUpperLeg",
-    "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot",
+    "Head","UpperTorso","LowerTorso","HumanoidRootPart","Torso",
+    "Left Arm","Right Arm","Left Leg","Right Leg",
+    "LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm",
+    "LeftHand","RightHand","LeftUpperLeg","RightUpperLeg",
+    "LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot",
 }
 local FEET_NAMES = {
-    "LeftFoot", "RightFoot", "LeftLowerLeg", "RightLowerLeg",
-    "Left Leg", "Right Leg", "LowerTorso",
+    "LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg",
+    "Left Leg","Right Leg","LowerTorso",
 }
 
 local function rebuildCharCache(char)
-    charParts  = {}
-    charFeet   = {}
+    charParts, charFeet = {}, {}
     charHRP    = char:FindFirstChild("HumanoidRootPart")
     charHuman  = char:FindFirstChildOfClass("Humanoid")
     for _, name in ipairs(HITBOX_NAMES) do
@@ -441,7 +393,6 @@ local function rebuildCharCache(char)
     end
 end
 
--- Lowest Y of feet  (used for jump height threshold vs knife impact Y)
 local function getFeetY()
     local lo = math.huge
     for _, p in ipairs(charFeet) do
@@ -458,8 +409,6 @@ end
 
 -- ════════════════════════════════════════════════════════════════════════
 --  §10  12-POINT ATOMIC LINE-OF-SIGHT
---  Returns  visibleCount, totalPoints, clearFraction, bestVisiblePoint
---  Low-medium strictness: require  WallCheckStrict fraction (≈42%) visible
 -- ════════════════════════════════════════════════════════════════════════
 local function atomicLoS(targetChar, originPos)
     if not targetChar then return 0, 12, 0, nil end
@@ -477,83 +426,77 @@ local function atomicLoS(targetChar, originPos)
     params.FilterType = Enum.RaycastFilterType.Blacklist
     params.FilterDescendantsInstances = filterList
 
-    -- Ordered check-point names  (head first = highest priority for best aim point)
     local checkOrder = {
-        "Head", "UpperTorso", "Torso", "HumanoidRootPart", "LowerTorso",
-        "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg",
-        "LeftHand", "RightHand", "LeftFoot",
+        "Head","UpperTorso","Torso","HumanoidRootPart","LowerTorso",
+        "LeftUpperArm","RightUpperArm","LeftUpperLeg","RightUpperLeg",
+        "LeftHand","RightHand","LeftFoot",
     }
 
     local checkPoints = {}
     for _, name in ipairs(checkOrder) do
         local p = targetChar:FindFirstChild(name)
         if p and p:IsA("BasePart") then
-            checkPoints[#checkPoints + 1] = { pos = p.Position, part = p, priority = #checkPoints + 1 }
+            checkPoints[#checkPoints + 1] = {
+                pos = p.Position, part = p, priority = #checkPoints + 1
+            }
         end
         if #checkPoints >= 12 then break end
     end
-    -- Fill remaining slots from all descendants
     if #checkPoints < 12 then
         for _, p in ipairs(targetChar:GetDescendants()) do
             if p:IsA("BasePart") then
-                checkPoints[#checkPoints + 1] = { pos = p.Position, part = p, priority = #checkPoints + 1 }
+                checkPoints[#checkPoints + 1] = {
+                    pos = p.Position, part = p, priority = #checkPoints + 1
+                }
             end
             if #checkPoints >= 12 then break end
         end
     end
 
-    local visCount  = 0
-    local bestPoint = nil
-    local bestPri   = math.huge
+    local visCount = 0
+    local bestPt   = nil
+    local bestPri  = math.huge
 
     for i, cp in ipairs(checkPoints) do
         if i > 12 then break end
         local dir    = cp.pos - originPos
         local result = Workspace:Raycast(originPos, dir, params)
         local hit    = result and result.Instance
-
-        -- Visible = no wall hit, OR the hit instance belongs to the target character
         local visible = (result == nil)
             or (hit and hit:IsDescendantOf(targetChar))
-
         if visible then
             visCount = visCount + 1
             if cp.priority < bestPri then
-                bestPri   = cp.priority
-                bestPoint = cp.pos
+                bestPri = cp.priority
+                bestPt  = cp.pos
             end
         end
     end
 
     local total = math.min(#checkPoints, 12)
-    return visCount, total, visCount / math.max(total, 1), bestPoint
+    return visCount, total, visCount / math.max(total, 1), bestPt
 end
 
 -- ════════════════════════════════════════════════════════════════════════
 --  §11  PART-AWARE NAVIGATION  (trusses, ramps, wedges, ledges)
---  Casts forward at ankle / hip / chest height.
---  Returns: yDelta (studs), obstacleClass ("truss","ramp","step","wall","ledge",nil)
 -- ════════════════════════════════════════════════════════════════════════
 local function classifyPart(part)
     if not part or not part:IsA("BasePart") then return nil end
-    if part:IsA("TrussPart")         then return "truss"    end
-    if part:IsA("WedgePart")         then return "ramp"     end
-    if part:IsA("CornerWedgePart")   then return "ramp"     end
-    local sy = part.Size.Y
-    if sy < 1.5 then return "floor" end
+    if part:IsA("TrussPart")       then return "truss"    end
+    if part:IsA("WedgePart")       then return "ramp"     end
+    if part:IsA("CornerWedgePart") then return "ramp"     end
+    if part.Size.Y < 1.5           then return "floor"    end
     return "obstacle"
 end
 
 local function getYCorrectionForDir(hrpPos, moveDir)
     if not charHRP then return 0, nil end
-
     local myChar = LocalPlayer.Character
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
     params.FilterDescendantsInstances = myChar and { myChar } or {}
 
     local checkDist = 3.4
-    -- Three scan heights: ankle (−1.8), hip (0), chest (+1.2)
     local origins = {
         hrpPos + Vector3.new(0, -1.8, 0),
         hrpPos + Vector3.new(0,  0.0, 0),
@@ -566,56 +509,38 @@ local function getYCorrectionForDir(hrpPos, moveDir)
             local cls     = classifyPart(result.Instance)
             local partTop = result.Instance.Position.Y + result.Instance.Size.Y * 0.5
             local delta   = partTop - hrpPos.Y
-
-            if cls == "truss" then
-                -- Trusses are climbable; hold W + jump near them
-                return delta + 0.6, "truss"
-            elseif cls == "ramp" then
-                return math.max(0, delta * 0.4), "ramp"
-            elseif cls == "obstacle" then
-                if delta <= CFG.JumpHeightThreshold then
-                    return delta + 0.35, "step"
-                else
-                    return delta, "wall"
-                end
-            elseif cls == "floor" then
-                return 0, "floor"
+            if cls == "truss"    then return delta + 0.6,        "truss"    end
+            if cls == "ramp"     then return math.max(0, delta * 0.4), "ramp" end
+            if cls == "obstacle" then
+                return delta, delta <= CFG.JumpHeightThreshold and "step" or "wall"
             end
         end
     end
 
-    -- Ledge detection: check that ground exists 2.5 studs ahead
-    local groundHere  = Workspace:Raycast(hrpPos + Vector3.new(0,-0.2,0), Vector3.new(0,-8,0), params)
-    local groundAhead = Workspace:Raycast(hrpPos + moveDir * 2.5 + Vector3.new(0,-0.2,0), Vector3.new(0,-8,0), params)
-    if groundHere and not groundAhead then
-        return -99, "ledge"
-    end
+    -- Ledge detection
+    local groundHere  = Workspace:Raycast(
+        hrpPos + Vector3.new(0,-0.2,0), Vector3.new(0,-8,0), params)
+    local groundAhead = Workspace:Raycast(
+        hrpPos + moveDir * 2.5 + Vector3.new(0,-0.2,0), Vector3.new(0,-8,0), params)
+    if groundHere and not groundAhead then return -99, "ledge" end
     if groundHere and groundAhead then
-        local stepUp = groundAhead.Position.Y - groundHere.Position.Y
-        if stepUp > 0.55 and stepUp < CFG.JumpHeightThreshold then
-            return stepUp + 0.25, "step"
-        end
+        local su = groundAhead.Position.Y - groundHere.Position.Y
+        if su > 0.55 and su < CFG.JumpHeightThreshold then return su + 0.25, "step" end
     end
-
     return 0, nil
 end
 
--- Gravity-aware jump trigger:
---  Given that we're about to walk into a step/truss/ramp, should we jump?
 local function shouldJumpForObstacle(yDelta, cls)
     if not cls then return false end
-    if cls == "ledge" then return false end   -- don't jump off ledges
-    if cls == "truss" then return true  end
-    if cls == "step"  then return yDelta and yDelta > 0.3 end
-    if cls == "ramp"  then return yDelta and yDelta > 0.8 end
+    if cls == "ledge"   then return false end
+    if cls == "truss"   then return true  end
+    if cls == "step"    then return yDelta and yDelta > 0.3 end
+    if cls == "ramp"    then return yDelta and yDelta > 0.8 end
     return false
 end
 
 -- ════════════════════════════════════════════════════════════════════════
 --  §12  MONTE CARLO TREE SEARCH  — path planning
---  Runs `MCTSSimulations` randomised walks each MCTSInterval seconds.
---  Scores by: progress toward goal, wall collisions, threat proximity,
---             ledge avoidance, directional bias.
 -- ════════════════════════════════════════════════════════════════════════
 local MCTSCache = {
     lastRunTime   = 0,
@@ -625,7 +550,6 @@ local MCTSCache = {
 
 local function mctsSearch(startPos, goalPos, simCount)
     if not goalPos then return nil end
-
     local myChar = LocalPlayer.Character
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
@@ -634,17 +558,14 @@ local function mctsSearch(startPos, goalPos, simCount)
     local goalFlat  = Vector3.new(goalPos.X, 0, goalPos.Z)
     local startFlat = Vector3.new(startPos.X, 0, startPos.Z)
     local rawDir    = goalFlat - startFlat
-    local goalDir   = rawDir.Magnitude > 0.1 and rawDir.Unit or Vector3.new(0, 0, -1)
-    local goalDist  = rawDir.Magnitude
+    local goalDir   = rawDir.Magnitude > 0.1 and rawDir.Unit or Vector3.new(0,0,-1)
 
     local step      = CFG.MCTSStepSize
     local depth     = CFG.MCTSDepth
-
-    local bestScore    = -math.huge
+    local bestScore = -math.huge
     local bestFirstDir = goalDir
 
     for _ = 1, simCount do
-        -- Bias first-step direction toward goal with random spread
         local baseAngle  = math.atan2(goalDir.Z, goalDir.X)
         local spread     = math.pi * 0.55
         local firstAngle = baseAngle + (math.random() * 2 - 1) * spread
@@ -655,64 +576,46 @@ local function mctsSearch(startPos, goalPos, simCount)
         local valid = true
 
         for d = 1, depth do
-            -- Progressively steer toward goal in later steps
-            local targetAngle  = math.atan2(goalDir.Z, goalDir.X)
-            local currentAngle = math.atan2(firstDir.Z, firstDir.X)
-            local t_blend      = (d / depth) * 0.5
-            local blendedAngle = currentAngle + (targetAngle - currentAngle) * t_blend
-            local stepDir      = Vector3.new(math.cos(blendedAngle), 0, math.sin(blendedAngle))
-            local nextPos      = pos + stepDir * step
+            local ta   = math.atan2(goalDir.Z, goalDir.X)
+            local ca   = math.atan2(firstDir.Z, firstDir.X)
+            local tb   = (d / depth) * 0.5
+            local ba   = ca + (ta - ca) * tb
+            local sd   = Vector3.new(math.cos(ba), 0, math.sin(ba))
+            local np   = pos + sd * step
 
-            -- Wall / obstacle check
             local wallHit = Workspace:Raycast(
-                pos + Vector3.new(0, 0.5, 0),
-                stepDir * (step * 1.15),
-                params
-            )
+                pos + Vector3.new(0, 0.5, 0), sd * (step * 1.15), params)
             if wallHit and wallHit.Instance then
                 local cls     = classifyPart(wallHit.Instance)
                 local partTop = wallHit.Instance.Position.Y + wallHit.Instance.Size.Y * 0.5
-                local yDelta  = partTop - pos.Y
-                if cls == "wall" or cls == "obstacle" then
-                    if yDelta > CFG.JumpHeightThreshold then
-                        score = score - 90
-                        valid = false
-                        break
+                local yD      = partTop - pos.Y
+                if cls == "obstacle" or cls == "wall" then
+                    if yD > CFG.JumpHeightThreshold then
+                        score = score - 90; valid = false; break
                     else
-                        score = score - 12   -- jumpable obstacle
+                        score = score - 12
                     end
                 end
             end
 
-            -- Ledge / drop-off check
-            local groundAhead = Workspace:Raycast(
-                nextPos + Vector3.new(0, 0.3, 0), Vector3.new(0, -9, 0), params
-            )
-            if not groundAhead then
-                score = score - 70
-                valid = false
-                break
-            end
+            local ga = Workspace:Raycast(
+                np + Vector3.new(0,0.3,0), Vector3.new(0,-9,0), params)
+            if not ga then score = score - 70; valid = false; break end
 
-            -- Threat proximity penalty (don't walk into enemy)
             for tplr, entry in pairs(EntityRegistry) do
                 if isEnemy(tplr) and entry.health > 0 then
-                    local ed = (nextPos - entry.pos).Magnitude
-                    if ed < 8 then
-                        score = score - (50 / (ed + 0.5))
-                    end
+                    local ed = (np - entry.pos).Magnitude
+                    if ed < 8 then score = score - 50 / (ed + 0.5) end
                 end
             end
 
-            pos   = nextPos
-            score = score + 6  -- movement progress
+            pos   = np
+            score = score + 6
         end
 
         if valid then
-            -- Distance-to-goal reward
-            local finalDist = Vector3.new(pos.X, 0, pos.Z) - goalFlat
-            score = score + 280 / (finalDist.Magnitude + 1)
-            -- Directional alignment bonus
+            local fd = Vector3.new(pos.X,0,pos.Z) - goalFlat
+            score = score + 280 / (fd.Magnitude + 1)
             score = score + firstDir:Dot(goalDir) * 28
         end
 
@@ -726,39 +629,30 @@ local function mctsSearch(startPos, goalPos, simCount)
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §13  NEURAL-HEURISTIC BRAIN
---  Weighted scoring across six actions.  Pre-tuned for combat (smart on frame 1).
---  Online learning: reward/penalise the last action based on outcomes.
---  Weights are clamped to [WeightClampLo, WeightClampHi].
+--  §13  NEURAL-HEURISTIC BRAIN  (pre-tuned weights, online learning)
 -- ════════════════════════════════════════════════════════════════════════
 local Brain = {
     w = {
-        dodge       = 1.72,   -- top priority: knife always dodged
-        juke        = 1.18,   -- melee orbit
-        engage      = 1.30,   -- shoot when LoS clear and loaded
-        retreat     = 0.58,   -- flee when low HP
-        navigate    = 0.95,   -- approach enemy
-        wait_reload = 1.15,   -- evasive movement during reload
+        dodge       = 1.72,
+        juke        = 1.18,
+        engage      = 1.30,
+        retreat     = 0.58,
+        navigate    = 0.95,
+        wait_reload = 1.15,
     },
     lastAction    = "navigate",
     decisionCount = 0,
 }
 
--- Compute a score for each action and return the winning action name.
--- All inputs are numeric scalars in [0,∞) or booleans.
 local function brainDecide(ctx)
-    -- ctx fields: health, maxHealth, targetDist, hasLoS, visFraction,
-    --             threatCount, isReloading, inMeleeRange, hasTarget, targetHP
-    local hpRatio  = ctx.health / math.max(ctx.maxHealth, 1)
-    local visFrac  = ctx.visFraction or 0
-    local threats  = ctx.threatCount or 0
-    local reload   = ctx.isReloading and 1 or 0
-    local melee    = ctx.inMeleeRange and 1 or 0
-    local hasTgt   = ctx.hasTarget and 1 or 0
-    local dist     = ctx.targetDist or 999
-
-    -- Visibility threshold gate (low-medium wall check)
-    local visGate  = visFrac >= CFG.WallCheckStrict and 1 or (visFrac / CFG.WallCheckStrict)
+    local hpRatio = ctx.health / math.max(ctx.maxHealth, 1)
+    local visFrac = ctx.visFraction or 0
+    local threats = ctx.threatCount or 0
+    local reload  = ctx.isReloading and 1 or 0
+    local melee   = ctx.inMeleeRange and 1 or 0
+    local hasTgt  = ctx.hasTarget and 1 or 0
+    local dist    = ctx.targetDist or 999
+    local visGate = visFrac >= CFG.WallCheckStrict and 1 or (visFrac / CFG.WallCheckStrict)
 
     local scores = {
         dodge       = Brain.w.dodge   * math.max(0, threats * 0.9 + (threats > 0 and 0.5 or 0)),
@@ -771,8 +665,7 @@ local function brainDecide(ctx)
         wait_reload = Brain.w.wait_reload * reload * (0.5 + (1 - hpRatio) * 0.5),
     }
 
-    local best  = "navigate"
-    local bestV = -math.huge
+    local best, bestV = "navigate", -math.huge
     for act, val in pairs(scores) do
         if val > bestV then bestV = val; best = act end
     end
@@ -782,12 +675,10 @@ local function brainDecide(ctx)
     return best, scores
 end
 
--- Online learning: call with positive (good) or negative (bad) reward
 local function brainReward(reward)
     local lr  = CFG.LearningRate
     local act = Brain.lastAction
     local w   = Brain.w
-
     if     act == "dodge"       then w.dodge       = w.dodge       + lr * reward
     elseif act == "juke"        then w.juke        = w.juke        + lr * reward
     elseif act == "engage"      then w.engage      = w.engage      + lr * reward
@@ -795,117 +686,92 @@ local function brainReward(reward)
     elseif act == "navigate"    then w.navigate    = w.navigate    + lr * reward
     elseif act == "wait_reload" then w.wait_reload = w.wait_reload + lr * reward
     end
-
-    -- Hard clamp to prevent divergence
     for k, v in pairs(w) do
         Brain.w[k] = math.max(CFG.WeightClampLo, math.min(CFG.WeightClampHi, v))
     end
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §14  PIXEL-PERFECT AIM SYSTEM  (camera-based, instant linear bullets)
+--  §14  PIXEL-PERFECT AIM  —  ZERO PREDICTION, DIRECT SNAP
 --
---  Since bullets are INSTANT and LINEAR (zero gravity, zero travel time):
---    • No ballistic arc correction needed
---    • Only lead needed = estimatedPing seconds of target movement
---    • Camera.CFrame is set to exact CFrame.new(camPos, predictedPoint)
---    • This is pixel-perfect: the rendered crosshair lands exactly on the point
+--  Bullets are INSTANT + LINEAR with ZERO GRAVITY.
+--  Camera.CFrame is snapped to CFrame.new(camPos, partPos) exactly.
+--  No velocity lead.  No arc correction.  Shoot directly at part.
 --
---  Priority order: Head → UpperTorso/Torso → HRP → any visible part
+--  Part priority: Head > UpperTorso/Torso > HRP > any visible part.
 -- ════════════════════════════════════════════════════════════════════════
-
--- Part priority for aim (lower index = more preferred)
 local AIM_PRIORITY = {
-    "Head", "UpperTorso", "Torso", "HumanoidRootPart",
-    "LowerTorso", "LeftUpperArm", "RightUpperArm",
-    "LeftLowerArm", "RightLowerArm",
+    "Head","UpperTorso","Torso","HumanoidRootPart",
+    "LowerTorso","LeftUpperArm","RightUpperArm",
+    "LeftLowerArm","RightLowerArm",
 }
 
--- Returns: predictedAimPoint (Vector3), partName (string) | nil, nil
-local function getBestAimPoint(targetChar, originPos, targetVel)
+-- Returns: aimPoint (Vector3, direct part position), partName | nil, nil
+-- NO prediction, NO lead — just the current live part.Position
+local function getBestAimPoint(targetChar, originPos)
     if not targetChar then return nil, nil end
-
     local myChar = LocalPlayer.Character
-    local filterList = myChar and { myChar } or {}
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = filterList
+    params.FilterDescendantsInstances = myChar and { myChar } or {}
 
-    -- Ping-compensation lead time.
-    -- Instant bullet → only network delay matters.
-    local lead = estimatedPing
-    local vel  = targetVel or Vector3.new()
-
-    -- Scan priority parts first
-    for idx, name in ipairs(AIM_PRIORITY) do
+    -- Scan priority parts
+    for _, name in ipairs(AIM_PRIORITY) do
         local part = targetChar:FindFirstChild(name)
         if part and part:IsA("BasePart") then
-            -- Linear prediction: where will this part be in `lead` seconds?
-            local predictedPos = part.Position + vel * lead
-
-            local dir    = predictedPos - originPos
+            -- Direct position: zero prediction
+            local aimPos = part.Position
+            local dir    = aimPos - originPos
             local result = Workspace:Raycast(originPos, dir, params)
-
             if result == nil then
-                -- Unobstructed: perfect shot
-                return predictedPos, name
+                return aimPos, name                        -- clean line of sight
             elseif result.Instance and result.Instance:IsDescendantOf(targetChar) then
-                -- Hit is on the target itself — valid shot point
-                return result.Position, name
+                return result.Position, name               -- hit is on the target
             end
         end
     end
 
-    -- Fall through: scan every descendant BasePart
+    -- Fall-through: scan every descendant BasePart
     for _, part in ipairs(targetChar:GetDescendants()) do
         if part:IsA("BasePart") then
-            local predictedPos = part.Position + vel * lead
-            local dir    = predictedPos - originPos
+            local aimPos = part.Position
+            local dir    = aimPos - originPos
             local result = Workspace:Raycast(originPos, dir, params)
             if result == nil or (result.Instance and result.Instance:IsDescendantOf(targetChar)) then
-                return predictedPos, part.Name
+                return aimPos, part.Name
             end
         end
     end
 
-    -- Last resort: HRP with ping lead (even if slightly behind wall)
+    -- Absolute fallback: HRP direct position even if slightly occluded
     local hrp = targetChar:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        return hrp.Position + vel * lead, "HumanoidRootPart_fallback"
-    end
+    if hrp then return hrp.Position, "HRP_fallback" end
     return nil, nil
 end
 
--- Set Camera.CFrame to look exactly at aimPoint from current camera position.
--- This is instantaneous and pixel-perfect for linear/instant projectiles.
+-- Snap camera CFrame to look exactly at aimPoint from current camera position.
+-- Pixel-perfect: rendered crosshair is on the part.
 local function applyAim(aimPoint)
     if not aimPoint then return end
-    local camPos = Camera.CFrame.Position
-    -- CFrame.new(pos, target) builds a CFrame looking at target from pos
-    Camera.CFrame = CFrame.new(camPos, aimPoint)
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPoint)
 end
 
--- Screen-space distance from viewport center to a world point
-local function screenDistFromCenter(worldPos)
-    local screenPos, onScreen = Camera:WorldToViewportPoint(worldPos)
-    if not onScreen then return math.huge end
-    local vp = Camera.ViewportSize
-    local dx = screenPos.X - vp.X * 0.5
-    local dy = screenPos.Y - vp.Y * 0.5
-    return math.sqrt(dx * dx + dy * dy)
-end
-
--- Select the primary aim target: closest to screen center, within FOV, alive, visible
+-- ════════════════════════════════════════════════════════════════════════
+--  §15  AIM TARGET SELECTION
+--  Select NEAREST alive enemy (world distance), no FOV radius gate.
+--  Wall check: low-medium strictness (42% of 12 points visible).
+-- ════════════════════════════════════════════════════════════════════════
 local function selectAimTarget()
     local myChar = LocalPlayer.Character
     if not myChar then return nil, nil end
     local myHRP = myChar:FindFirstChild("HumanoidRootPart")
     if not myHRP then return nil, nil end
 
-    local originPos = Camera.CFrame.Position
-    local bestPlr   = nil
-    local bestDist  = math.huge
-    local bestPoint = nil
+    local originPos  = Camera.CFrame.Position
+    local myPos      = myHRP.Position
+    local bestPlr    = nil
+    local bestDist   = math.huge
+    local bestAimPt  = nil
 
     for _, plr in ipairs(Players:GetPlayers()) do
         if not isEnemy(plr) then continue end
@@ -915,38 +781,28 @@ local function selectAimTarget()
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not hrp or not hum or hum.Health <= 0 then continue end
 
-        -- Quick FOV reject using HRP screen position
-        local sDist = screenDistFromCenter(hrp.Position)
-        if sDist > CFG.FOVRadius then continue end
+        local dist = (hrp.Position - myPos).Magnitude
+        if dist >= bestDist then continue end
 
         -- Wall check (low-medium: 42% of 12 points)
-        local vis, _, frac, _ = atomicLoS(char, originPos)
+        local _, _, frac, _ = atomicLoS(char, originPos)
         if frac < CFG.WallCheckStrict then continue end
 
-        if sDist < bestDist then
-            local entry  = EntityRegistry[plr]
-            local vel    = entry and entry.vel or Vector3.new()
-            local aimPt, _ = getBestAimPoint(char, originPos, vel)
-            if aimPt then
-                bestDist  = sDist
-                bestPlr   = plr
-                bestPoint = aimPt
-            end
+        -- Direct aim point (zero prediction)
+        local aimPt, _ = getBestAimPoint(char, originPos)
+        if aimPt then
+            bestDist   = dist
+            bestPlr    = plr
+            bestAimPt  = aimPt
         end
     end
 
-    return bestPlr, bestPoint
+    return bestPlr, bestAimPt
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §15  KNIFE / PROJECTILE DODGE SYSTEM
---  Knife trajectory is FULLY LINEAR (no gravity).
---  Uses analytical ray-sphere intersection for exact impact prediction.
---  Collision check: knife ray vs sphere of radius HitboxPadding around
---  each body part.  Returns the first (smallest t) intersection.
+--  §16  KNIFE / PROJECTILE DODGE  (linear trajectory, time-delayed travel)
 -- ════════════════════════════════════════════════════════════════════════
-
--- Evaluate one projectile as a threat.  Returns threat table or nil.
 local function evalProjectileThreat(partPos, partVel, hrpPos, feetY)
     local speed = partVel.Magnitude
     if speed < CFG.MinProjectileSpeed then return nil end
@@ -954,26 +810,20 @@ local function evalProjectileThreat(partPos, partVel, hrpPos, feetY)
     local toPlayer = hrpPos - partPos
     local dist     = toPlayer.Magnitude
     if dist > CFG.DetectionRange then return nil end
-    -- Reject if knife is not heading toward us (dot < threshold)
     if dist > 0.001 then
-        local cosAngle = toPlayer:Dot(partVel) / (dist * speed)
-        if cosAngle < CFG.DotFacingThreshold then return nil end
+        local cosA = toPlayer:Dot(partVel) / (dist * speed)
+        if cosA < CFG.DotFacingThreshold then return nil end
     end
 
-    -- Ray-sphere intersection:  ray origin = partPos, dir = partVel (not normalised)
-    --  sphere center = each body part position, radius = HitboxPadding
-    --  solve:  |partPos + t*partVel - sphereCenter|² = R²
-    local a     = partVel:Dot(partVel)     -- |v|²
+    local a     = partVel:Dot(partVel)
     if a < 1e-10 then return nil end
     local inv2a = 0.5 / a
     local pad   = CFG.HitboxPadding
     local pad2  = pad * pad
 
-    local bestT    = math.huge
-    local bestPart = nil
-
+    local bestT, bestPart = math.huge, nil
     for _, hp in ipairs(charParts) do
-        local oc   = partPos - hp.Position   -- origin - sphere center
+        local oc   = partPos - hp.Position
         local b    = 2 * oc:Dot(partVel)
         local c    = oc:Dot(oc) - pad2
         local disc = b * b - 4 * a * c
@@ -981,7 +831,6 @@ local function evalProjectileThreat(partPos, partVel, hrpPos, feetY)
             local sq = math.sqrt(disc)
             local t1 = (-b - sq) * inv2a
             local t2 = (-b + sq) * inv2a
-            -- We want smallest non-negative t
             local t  = (t1 >= 0) and t1 or t2
             if t >= 0 and t <= CFG.FutureLookAhead and t < bestT then
                 bestT    = t
@@ -989,29 +838,20 @@ local function evalProjectileThreat(partPos, partVel, hrpPos, feetY)
             end
         end
     end
-
     if not bestPart then return nil end
 
-    -- Impact point (linear, no gravity)
-    local knifeImpact = partPos + partVel * bestT
-
-    -- Build perpendicular vectors in the XZ plane
-    local vFlat = Vector3.new(partVel.X, 0, partVel.Z)
-    vFlat = vFlat.Magnitude > 0.001 and vFlat.Unit or Vector3.new(1, 0, 0)
+    local impact = partPos + partVel * bestT
+    local vFlat  = Vector3.new(partVel.X, 0, partVel.Z)
+    vFlat = vFlat.Magnitude > 0.001 and vFlat.Unit or Vector3.new(1,0,0)
     local pA   = Vector3.new(-vFlat.Z, 0,  vFlat.X)
     local pB   = Vector3.new( vFlat.Z, 0, -vFlat.X)
-    local away = Vector3.new(hrpPos.X - knifeImpact.X, 0, hrpPos.Z - knifeImpact.Z)
+    local away = Vector3.new(hrpPos.X - impact.X, 0, hrpPos.Z - impact.Z)
     away = away.Magnitude > 0.01 and away.Unit or (-vFlat)
-
-    -- bestPerp = the perpendicular side that is "away" from impact direction
     local bestPerp = pA:Dot(away) >= pB:Dot(away) and pA or pB
-
-    -- Gravity-aware jump flag: if impact Y is near feet level, jump
-    local needJump = (knifeImpact.Y <= feetY + CFG.JumpHeightThreshold) and (bestT < 0.55)
 
     return {
         t        = bestT,
-        impact   = knifeImpact,
+        impact   = impact,
         vel      = partVel,
         pos      = partPos,
         speed    = speed,
@@ -1020,76 +860,56 @@ local function evalProjectileThreat(partPos, partVel, hrpPos, feetY)
         bestPerp = bestPerp,
         away     = away,
         vFlat    = vFlat,
-        needJump = needJump,
+        needJump = (impact.Y <= feetY + CFG.JumpHeightThreshold) and (bestT < 0.55),
         urgency  = 1 / (bestT + 0.01),
     }
 end
 
--- Clearance: how far will our future XZ position be from the knife ray
--- if we move in `dir` for min(th.t, 0.5) seconds at WalkSpeed?
 local function computeClearance(dir, hrpPos, th)
-    local moveTime = math.min(th.t, 0.5)
-    local fx = hrpPos.X + dir.X * CFG.WalkSpeed * moveTime
-    local fz = hrpPos.Z + dir.Z * CFG.WalkSpeed * moveTime
-
-    -- Closest point on ray (2D XZ) to future player position
+    local mt = math.min(th.t, 0.5)
+    local fx = hrpPos.X + dir.X * CFG.WalkSpeed * mt
+    local fz = hrpPos.Z + dir.Z * CFG.WalkSpeed * mt
     local ox, oz = th.pos.X, th.pos.Z
     local dx, dz = th.vFlat.X, th.vFlat.Z
-    local ex     = fx - ox
-    local ez     = fz - oz
-    local proj   = math.max(0, ex * dx + ez * dz)
-    local cx     = ox + dx * proj
-    local cz     = oz + dz * proj
-    local rx     = fx - cx
-    local rz     = fz - cz
-    return math.sqrt(rx * rx + rz * rz)
+    local ex     = fx - ox; local ez = fz - oz
+    local proj   = math.max(0, ex*dx + ez*dz)
+    local cx     = ox + dx*proj; local cz = oz + dz*proj
+    local rx     = fx - cx; local rz = fz - cz
+    return math.sqrt(rx*rx + rz*rz)
 end
 
--- Score a candidate dodge direction against all threats.
--- Hard-rejects directions that still land inside HitboxPadding.
--- Returns a scalar score (higher = safer).
 local function scoreDodgeDir(dir, hrpPos, threats)
-    local safe  = CFG.HitboxPadding * CFG.SafeMarginMult
-    local minC  = math.huge
-    local total = 0
+    local safe = CFG.HitboxPadding * CFG.SafeMarginMult
+    local minC = math.huge
+    local tot  = 0
     for _, th in ipairs(threats) do
         local c = computeClearance(dir, hrpPos, th)
         if c < minC then minC = c end
         if c >= safe then
-            total = total + c * th.urgency
+            tot = tot + c * th.urgency
         else
-            total = total - (safe - c) * 22 * th.urgency
+            tot = tot - (safe - c) * 22 * th.urgency
         end
     end
     if minC < CFG.HitboxPadding then return -math.huge end
-    return total
+    return tot
 end
 
--- Find the best dodge direction across all active threats.
 local function computeBestDodge(hrpPos, threats)
     if #threats == 0 then return nil end
-
-    local bestDir   = nil
-    local bestScore = -math.huge
-
-    -- 128-direction sweep
+    local bestDir, bestScore = nil, -math.huge
     for _, d in ipairs(SWEEP) do
         local s = scoreDodgeDir(d, hrpPos, threats)
         if s > bestScore then bestScore = s; bestDir = d end
     end
-
-    -- Per-threat candidate directions (perpendicular + away)
     for _, th in ipairs(threats) do
-        for _, cand in ipairs({ th.pA, th.pB, th.away, th.bestPerp }) do
+        for _, cand in ipairs({th.pA, th.pB, th.away, th.bestPerp}) do
             if cand and cand.Magnitude > 0.01 then
                 local s = scoreDodgeDir(cand.Unit, hrpPos, threats)
                 if s > bestScore then bestScore = s; bestDir = cand.Unit end
             end
         end
     end
-
-    -- Fallback if ALL directions remain inside threat (surrounded):
-    -- pick the direction with maximum clearance regardless of hard-reject
     if not bestDir or bestScore == -math.huge then
         bestScore = -math.huge
         for _, d in ipairs(SWEEP) do
@@ -1101,16 +921,15 @@ local function computeBestDodge(hrpPos, threats)
             if minC > bestScore then bestScore = minC; bestDir = d end
         end
     end
-
     return bestDir
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §16  PROJECTILE TRACKING
+--  §17  PROJECTILE TRACKING
 -- ════════════════════════════════════════════════════════════════════════
-local projSet  = {}   -- [BasePart] = true
-local projData = {}   -- [BasePart] = { lastPos, vel, born, frames }
-local projList = {}   -- ordered array of tracked parts
+local projSet  = {}
+local projData = {}
+local projList = {}
 
 local function isProjectileName(n)
     local lo = n:lower()
@@ -1121,45 +940,28 @@ local function isProjectileName(n)
         or lo:find("orb")    or lo:find("shuriken")
 end
 
--- Immediate spawn-dodge triggered the moment a knife enters the workspace
 local function spawnInstantDodge(vel, knifePos)
     if not CFG.DodgeEnabled then return end
     local hrp = charHRP
-    if not hrp then return end
-    if vel.Magnitude < CFG.MinProjectileSpeed then return end
-
+    if not hrp or vel.Magnitude < CFG.MinProjectileSpeed then return end
     local hrpPos = hrp.Position
     local vFlat  = Vector3.new(vel.X, 0, vel.Z)
     if vFlat.Magnitude < 0.001 then return end
     vFlat = vFlat.Unit
-
     local away = Vector3.new(hrpPos.X - knifePos.X, 0, hrpPos.Z - knifePos.Z)
     away = away.Magnitude > 0.01 and away.Unit or (-vFlat)
     local pA = Vector3.new(-vFlat.Z, 0,  vFlat.X)
     local pB = Vector3.new( vFlat.Z, 0, -vFlat.X)
     local bp = pA:Dot(away) >= pB:Dot(away) and pA or pB
-
     local estT = math.max(0.05, (hrpPos - knifePos).Magnitude / math.max(vel.Magnitude, 1))
-    local fakeThreat = {
-        t        = estT,
-        impact   = knifePos + vel * estT,
-        vel      = vel,
-        pos      = knifePos,
-        speed    = vel.Magnitude,
-        pA       = pA,
-        pB       = pB,
-        bestPerp = bp,
-        away     = away,
-        vFlat    = vFlat,
-        urgency  = 1 / (estT + 0.01),
+    local fake = {
+        t = estT, impact = knifePos + vel * estT, vel = vel, pos = knifePos,
+        speed = vel.Magnitude, pA = pA, pB = pB, bestPerp = bp, away = away,
+        vFlat = vFlat, urgency = 1 / (estT + 0.01),
     }
-
-    local dodgeDir = computeBestDodge(hrpPos, { fakeThreat }) or bp
+    local dodgeDir = computeBestDodge(hrpPos, {fake}) or bp
     fireKeys(dodgeDir)
-
-    if knifePos.Y <= getFeetY() + CFG.JumpHeightThreshold then
-        doJump()
-    end
+    if knifePos.Y <= getFeetY() + CFG.JumpHeightThreshold then doJump() end
 end
 
 local function registerProjectile(obj)
@@ -1167,18 +969,13 @@ local function registerProjectile(obj)
     local part = obj:IsA("BasePart") and obj
               or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
     if not part or projSet[part] then return end
-
     local vel  = part.AssemblyLinearVelocity
     local pos  = part.Position
     local data = { lastPos = pos, vel = vel, born = os.clock(), frames = 0 }
-    projSet[part]          = true
-    projData[part]         = data
+    projSet[part]           = true
+    projData[part]          = data
     projList[#projList + 1] = part
-
-    -- Immediate dodge on registration
     spawnInstantDodge(vel, pos)
-
-    -- Some knives start at zero velocity then update — hook the change
     local conn
     conn = part:GetPropertyChangedSignal("AssemblyLinearVelocity"):Connect(function()
         if not projSet[part] then conn:Disconnect(); return end
@@ -1189,14 +986,10 @@ local function registerProjectile(obj)
             conn:Disconnect()
         end
     end)
-
-    -- Deferred 1-frame velocity check
     task.defer(function()
         if projSet[part] then
             local v = part.AssemblyLinearVelocity
-            if v.Magnitude > data.vel.Magnitude * 0.5 then
-                data.vel = v
-            end
+            if v.Magnitude > data.vel.Magnitude * 0.5 then data.vel = v end
         end
     end)
 end
@@ -1219,19 +1012,16 @@ local function connectProjectileFolder(folder)
 end
 
 task.spawn(function()
-    local folderNames = {
-        "ProjectilesAndDebris", "Projectiles", "Debris",
-        "Knives", "Throwables", "Bullets",
+    local names = {
+        "ProjectilesAndDebris","Projectiles","Debris","Knives","Throwables","Bullets"
     }
-    for _, n in ipairs(folderNames) do
+    for _, n in ipairs(names) do
         local f = Workspace:FindFirstChild(n)
         if f then connectProjectileFolder(f); return end
     end
-    -- Fallback: watch entire workspace
     connectProjectileFolder(Workspace)
 end)
 
--- Per-frame velocity refinement for all tracked projectiles
 local function updateProjectileVelocities(dt)
     local i = 1
     while i <= #projList do
@@ -1242,10 +1032,9 @@ local function updateProjectileVelocities(dt)
         else
             local d = projData[part]
             if d and dt > 0 then
-                local np = part.Position
-                local dv = (np - d.lastPos) / dt
-                d.frames = (d.frames or 0) + 1
-                -- Early frames: trust Roblox velocity more; later frames trust delta more
+                local np   = part.Position
+                local dv   = (np - d.lastPos) / dt
+                d.frames   = (d.frames or 0) + 1
                 if d.frames <= 2 then
                     d.vel = dv * 0.30 + part.AssemblyLinearVelocity * 0.70
                 else
@@ -1259,55 +1048,32 @@ local function updateProjectileVelocities(dt)
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §17  MELEE JUKE  —  ATOMIC ORBIT  (character-based, not camera)
---  When enemy enters MeleeRange:
---    1. Read enemy CHARACTER's LookVector (not camera)
---    2. Compute the 180° blind spot (behind them)
---    3. Move character there using fireKeys()
---    4. Camera continues to aim at enemy independently
+--  §18  MELEE JUKE  —  ATOMIC ORBIT  (character movement, camera stays on aim)
 -- ════════════════════════════════════════════════════════════════════════
 local JukeState = {
     active       = false,
-    orbitDir     = 1,        -- +1 clockwise, −1 counter-clockwise
+    orbitDir     = 1,
     targetPlayer = nil,
-    changeTimer  = 0,        -- time until orbit direction randomises again
+    changeTimer  = 0,
 }
 
--- Given our position, enemy position, and enemy facing direction,
--- return the world-space XZ movement direction to reach their blind spot.
 local function computeJukeDir(myPos, enemyPos, enemyLook)
-    -- Blind spot position = 2 studs directly behind the enemy
-    local blindSpotWorld = enemyPos - enemyLook * 2.0
-    local toBlind = Vector3.new(
-        blindSpotWorld.X - myPos.X, 0, blindSpotWorld.Z - myPos.Z
-    )
-
-    local toEnemy = Vector3.new(enemyPos.X - myPos.X, 0, enemyPos.Z - myPos.Z)
-
+    local blindSpot = enemyPos - enemyLook * 2.0
+    local toBlind   = Vector3.new(blindSpot.X - myPos.X, 0, blindSpot.Z - myPos.Z)
+    local toEnemy   = Vector3.new(enemyPos.X - myPos.X,  0, enemyPos.Z - myPos.Z)
     if toBlind.Magnitude < 0.5 then
-        -- Already in blind spot: orbit perpendicular to keep moving
         local perp = Vector3.new(-enemyLook.Z, 0, enemyLook.X) * JukeState.orbitDir
         return perp.Magnitude > 0.01 and perp.Unit or enemyLook
     end
-
     toBlind = toBlind.Unit
-    -- Perpendicular orbit component
-    local perpComp = Vector3.new(-toEnemy.Unit.Z, 0, toEnemy.Unit.X) * JukeState.orbitDir
-
-    -- Blend: 70% toward blind spot, 30% perpendicular orbit
-    local blended = toBlind * 0.70 + perpComp * 0.30
+    local perpComp  = Vector3.new(-toEnemy.Unit.Z, 0, toEnemy.Unit.X) * JukeState.orbitDir
+    local blended   = toBlind * 0.70 + perpComp * 0.30
     return blended.Magnitude > 0.01 and blended.Unit or toBlind
 end
 
--- Execute one juke frame; returns true if juke was active
 local function executeJuke(myPos, now)
     if not CFG.JukeEnabled then JukeState.active = false; return false end
-
-    -- Find closest melee-range enemy
-    local closestPlr   = nil
-    local closestDist  = CFG.MeleeRange
-    local closestEntry = nil
-
+    local closestPlr, closestDist, closestEntry = nil, CFG.MeleeRange, nil
     for plr, entry in pairs(EntityRegistry) do
         if isEnemy(plr) and entry.health > 0 then
             local d = (entry.pos - myPos).Magnitude
@@ -1318,45 +1084,33 @@ local function executeJuke(myPos, now)
             end
         end
     end
-
-    if not closestPlr then
-        JukeState.active = false
-        return false
-    end
-
-    -- (Re)initialise juke state
+    if not closestPlr then JukeState.active = false; return false end
     if not JukeState.active or JukeState.targetPlayer ~= closestPlr then
         JukeState.active       = true
         JukeState.targetPlayer = closestPlr
         JukeState.orbitDir     = math.random() > 0.5 and 1 or -1
         JukeState.changeTimer  = now + 0.6
     end
-
-    -- Periodically flip orbit direction (unpredictable)
     if now > JukeState.changeTimer then
-        JukeState.orbitDir  = -JukeState.orbitDir
+        JukeState.orbitDir    = -JukeState.orbitDir
         JukeState.changeTimer = now + math.random() * 0.5 + 0.3
     end
-
-    -- Enemy look vector from their HRP CFrame (character-facing, not camera)
     local eLook = closestEntry.lastCFrame.LookVector
     eLook = Vector3.new(eLook.X, 0, eLook.Z)
-    eLook = eLook.Magnitude > 0.01 and eLook.Unit or Vector3.new(0, 0, 1)
-
+    eLook = eLook.Magnitude > 0.01 and eLook.Unit or Vector3.new(0,0,1)
     local jukeDir = computeJukeDir(myPos, closestEntry.pos, eLook)
     fireKeys(jukeDir)
     return true
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §18  ANTI-STUCK SYSTEM
---  If character hasn't moved in StuckWindow seconds, juke direction
+--  §19  ANTI-STUCK SYSTEM
 -- ════════════════════════════════════════════════════════════════════════
 local stuckTracker = {
-    lastPos        = Vector3.new(),
-    lastMoveTime   = os.clock(),
-    stuckTryDir    = nil,
-    stuckTryStart  = 0,
+    lastPos       = Vector3.new(),
+    lastMoveTime  = os.clock(),
+    stuckTryDir   = nil,
+    stuckTryStart = 0,
 }
 
 local function updateStuck(hrpPos, moveDir, now)
@@ -1365,32 +1119,31 @@ local function updateStuck(hrpPos, moveDir, now)
         stuckTracker.lastPos      = hrpPos
         stuckTracker.lastMoveTime = now
         stuckTracker.stuckTryDir  = nil
-        return false  -- not stuck
+        return false
     end
     if now - stuckTracker.lastMoveTime > CFG.StuckWindow then
-        -- Generate an escape direction perpendicular to intended movement
         if not stuckTracker.stuckTryDir then
-            local perp = Vector3.new(-(moveDir or Vector3.new(0,0,1)).Z, 0, (moveDir or Vector3.new(0,0,1)).X)
+            local ref = moveDir or Vector3.new(0,0,1)
+            local perp = Vector3.new(-ref.Z, 0, ref.X)
             stuckTracker.stuckTryDir  = math.random() > 0.5 and perp or -perp
             stuckTracker.stuckTryStart = now
         end
-        -- Try escape direction for 0.5 s then reassign
         if now - stuckTracker.stuckTryStart < 0.5 then
             fireKeys(stuckTracker.stuckTryDir)
             doJump()
-            return true  -- stuck
+            return true
         else
             stuckTracker.stuckTryDir  = nil
-            stuckTracker.lastMoveTime = now  -- reset timer
+            stuckTracker.lastMoveTime = now
         end
     end
     return false
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §19  ESP  SYSTEM
+--  §20  ESP  SYSTEM
 -- ════════════════════════════════════════════════════════════════════════
-local espHighlights = {}   -- [Player] = Highlight instance
+local espHighlights = {}
 
 local function removeESP(plr)
     if espHighlights[plr] then
@@ -1404,25 +1157,23 @@ local function createESP(plr)
     local char = plr.Character
     if not char then return end
     removeESP(plr)
-
     local hl = Instance.new("Highlight")
-    hl.Name               = "MC_ESP_" .. plr.Name
-    hl.Parent             = char
-    hl.FillColor          = isEnemy(plr) and Color3.fromRGB(255, 38, 38) or Color3.fromRGB(38, 255, 80)
-    hl.OutlineColor       = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency   = 0.42
+    hl.Name                = "MC_ESP_" .. plr.Name
+    hl.Parent              = char
+    hl.FillColor           = isEnemy(plr) and Color3.fromRGB(255,38,38) or Color3.fromRGB(38,255,80)
+    hl.OutlineColor        = Color3.fromRGB(255,255,255)
+    hl.FillTransparency    = 0.42
     hl.OutlineTransparency = 0
-    hl.DepthMode          = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Enabled            = CFG.ESPEnabled and isEnemy(plr)
-
-    espHighlights[plr] = hl
+    hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled             = CFG.ESPEnabled and isEnemy(plr)
+    espHighlights[plr]     = hl
 end
 
 local function refreshAllESP()
     for plr, hl in pairs(espHighlights) do
         if hl and hl.Parent then
             hl.Enabled   = CFG.ESPEnabled and isEnemy(plr)
-            hl.FillColor = isEnemy(plr) and Color3.fromRGB(255, 38, 38) or Color3.fromRGB(38, 255, 80)
+            hl.FillColor = isEnemy(plr) and Color3.fromRGB(255,38,38) or Color3.fromRGB(38,255,80)
         end
     end
 end
@@ -1430,16 +1181,13 @@ end
 local function setupPlayerESP(plr)
     if plr == LocalPlayer then return end
     plr.CharacterAdded:Connect(function()
-        task.wait(0.35)
-        createESP(plr)
+        task.wait(0.35); createESP(plr)
     end)
     plr.CharacterRemoving:Connect(function()
-        task.wait(0.1)
-        removeESP(plr)
+        task.wait(0.1); removeESP(plr)
     end)
     plr:GetPropertyChangedSignal("Team"):Connect(function()
-        task.wait(0.1)
-        createESP(plr)
+        task.wait(0.1); createESP(plr)
     end)
     if plr.Character then
         task.spawn(function() task.wait(0.25); createESP(plr) end)
@@ -1452,15 +1200,13 @@ Players.PlayerRemoving:Connect(removeESP)
 LocalPlayer:GetPropertyChangedSignal("Team"):Connect(refreshAllESP)
 
 -- ════════════════════════════════════════════════════════════════════════
---  §20  DIAGNOSTIC HUD
---  Draggable panel with per-system toggles, status labels, and reload bar.
+--  §21  DIAGNOSTIC HUD  (draggable, toggles, reload bar, no FOV ring)
 -- ════════════════════════════════════════════════════════════════════════
 local HUD = { ready = false }
 
 task.spawn(function()
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-    -- Root ScreenGui
     local SG = Instance.new("ScreenGui")
     SG.Name           = "MC_HUD"
     SG.ResetOnSpawn   = false
@@ -1468,53 +1214,51 @@ task.spawn(function()
     SG.DisplayOrder   = 99
     SG.Parent         = playerGui
 
-    -- FOV circle visual (shown at screen center)
-    local fovRing = Instance.new("Frame")
-    fovRing.Name                  = "FOVRing"
-    fovRing.Size                  = UDim2.new(0, CFG.FOVRadius * 2, 0, CFG.FOVRadius * 2)
-    fovRing.AnchorPoint           = Vector2.new(0.5, 0.5)
-    fovRing.Position              = UDim2.new(0.5, 0, 0.5, 0)
-    fovRing.BackgroundColor3      = Color3.fromRGB(255, 55, 55)
-    fovRing.BackgroundTransparency = 0.88
-    fovRing.BorderSizePixel       = 0
-    fovRing.Parent                = SG
-    Instance.new("UICorner", fovRing).CornerRadius = UDim.new(1, 0)
-    HUD.fovRing = fovRing
-
-    -- Reload progress bar background
+    -- Reload bar background (appears below crosshair when reloading)
     local rBarBG = Instance.new("Frame")
-    rBarBG.Size                = UDim2.new(0, 170, 0, 7)
-    rBarBG.AnchorPoint         = Vector2.new(0.5, 0)
-    rBarBG.Position            = UDim2.new(0.5, 0, 0.5, 20)
-    rBarBG.BackgroundColor3    = Color3.fromRGB(35, 35, 35)
-    rBarBG.BackgroundTransparency = 0.25
-    rBarBG.BorderSizePixel     = 0
-    rBarBG.Visible             = false
-    rBarBG.Parent              = SG
+    rBarBG.Size                  = UDim2.new(0, 180, 0, 7)
+    rBarBG.AnchorPoint           = Vector2.new(0.5, 0)
+    rBarBG.Position              = UDim2.new(0.5, 0, 0.5, 22)
+    rBarBG.BackgroundColor3      = Color3.fromRGB(30, 30, 30)
+    rBarBG.BackgroundTransparency = 0.22
+    rBarBG.BorderSizePixel       = 0
+    rBarBG.Visible               = false
+    rBarBG.Parent                = SG
     Instance.new("UICorner", rBarBG).CornerRadius = UDim.new(0, 4)
-    HUD.rBarBG = rBarBG
 
     local rBar = Instance.new("Frame")
     rBar.Size             = UDim2.new(0, 0, 1, 0)
-    rBar.BackgroundColor3 = Color3.fromRGB(255, 200, 45)
+    rBar.BackgroundColor3 = Color3.fromRGB(255, 200, 40)
     rBar.BorderSizePixel  = 0
     rBar.Parent           = rBarBG
     Instance.new("UICorner", rBar).CornerRadius = UDim.new(0, 4)
-    HUD.rBar = rBar
+    HUD.rBarBG = rBarBG
+    HUD.rBar   = rBar
 
-    -- Main draggable panel
+    -- Small crosshair dot at screen centre
+    local dot = Instance.new("Frame")
+    dot.Size                  = UDim2.new(0, 5, 0, 5)
+    dot.AnchorPoint           = Vector2.new(0.5, 0.5)
+    dot.Position              = UDim2.new(0.5, 0, 0.5, 0)
+    dot.BackgroundColor3      = Color3.fromRGB(255, 55, 55)
+    dot.BackgroundTransparency = 0.0
+    dot.BorderSizePixel       = 0
+    dot.Parent                = SG
+    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+    -- Main panel
     local panel = Instance.new("Frame")
-    panel.Name                  = "MCPanel"
-    panel.Size                  = UDim2.new(0, 218, 0, 320)
-    panel.Position              = UDim2.new(0, 14, 0, 14)
-    panel.BackgroundColor3      = Color3.fromRGB(8, 8, 18)
+    panel.Name                   = "MCPanel"
+    panel.Size                   = UDim2.new(0, 220, 0, 325)
+    panel.Position               = UDim2.new(0, 14, 0, 14)
+    panel.BackgroundColor3       = Color3.fromRGB(8, 8, 18)
     panel.BackgroundTransparency = 0.07
-    panel.BorderSizePixel       = 0
-    panel.Active                = true
-    panel.Parent                = SG
+    panel.BorderSizePixel        = 0
+    panel.Active                 = true
+    panel.Parent                 = SG
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 10)
 
-    -- Title / drag-handle bar
+    -- Title bar
     local titleBar = Instance.new("Frame")
     titleBar.Size             = UDim2.new(1, 0, 0, 28)
     titleBar.BackgroundColor3 = Color3.fromRGB(18, 18, 42)
@@ -1523,70 +1267,67 @@ task.spawn(function()
     Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 
     local titleLbl = Instance.new("TextLabel")
-    titleLbl.Size              = UDim2.new(1, -10, 1, 0)
-    titleLbl.Position          = UDim2.new(0, 10, 0, 0)
+    titleLbl.Size                = UDim2.new(1, -10, 1, 0)
+    titleLbl.Position            = UDim2.new(0, 10, 0, 0)
     titleLbl.BackgroundTransparency = 1
-    titleLbl.Text              = "⚡  MASTER CONTROLLER  v3.0"
-    titleLbl.TextColor3        = Color3.fromRGB(140, 175, 255)
-    titleLbl.TextScaled        = true
-    titleLbl.Font              = Enum.Font.GothamBold
-    titleLbl.TextXAlignment    = Enum.TextXAlignment.Left
-    titleLbl.Parent            = titleBar
+    titleLbl.Text                = "Autoplayer"
+    titleLbl.TextColor3          = Color3.fromRGB(140, 175, 255)
+    titleLbl.TextScaled          = true
+    titleLbl.Font                = Enum.Font.GothamBold
+    titleLbl.TextXAlignment      = Enum.TextXAlignment.Left
+    titleLbl.Parent              = titleBar
 
-    -- Helper: create a labelled toggle row at yOffset
-    local function makeToggle(yOff, labelText, initState, onToggle)
+    -- Toggle row factory
+    local function makeToggle(yOff, label, initState, onToggle)
         local row = Instance.new("Frame")
-        row.Size                = UDim2.new(1, -16, 0, 30)
-        row.Position            = UDim2.new(0, 8, 0, yOff)
+        row.Size                 = UDim2.new(1, -16, 0, 30)
+        row.Position             = UDim2.new(0, 8, 0, yOff)
         row.BackgroundTransparency = 1
-        row.Parent              = panel
-
+        row.Parent               = panel
         local lbl = Instance.new("TextLabel")
-        lbl.Size                = UDim2.new(0, 130, 1, 0)
+        lbl.Size                 = UDim2.new(0, 135, 1, 0)
         lbl.BackgroundTransparency = 1
-        lbl.Text                = labelText
-        lbl.TextColor3          = Color3.fromRGB(195, 195, 210)
-        lbl.TextScaled          = true
-        lbl.Font                = Enum.Font.Gotham
-        lbl.TextXAlignment      = Enum.TextXAlignment.Left
-        lbl.Parent              = row
-
+        lbl.Text                 = label
+        lbl.TextColor3           = Color3.fromRGB(195, 195, 210)
+        lbl.TextScaled           = true
+        lbl.Font                 = Enum.Font.Gotham
+        lbl.TextXAlignment       = Enum.TextXAlignment.Left
+        lbl.Parent               = row
         local btn = Instance.new("TextButton")
         btn.Size             = UDim2.new(0, 52, 0, 21)
         btn.Position         = UDim2.new(1, -52, 0.5, -10)
         btn.Text             = initState and "ON" or "OFF"
-        btn.TextColor3       = Color3.new(1, 1, 1)
+        btn.TextColor3       = Color3.new(1,1,1)
         btn.TextScaled       = true
         btn.Font             = Enum.Font.GothamBold
-        btn.BackgroundColor3 = initState and Color3.fromRGB(0, 195, 75) or Color3.fromRGB(195, 45, 45)
+        btn.BackgroundColor3 = initState
+            and Color3.fromRGB(0,195,75) or Color3.fromRGB(195,45,45)
         btn.BorderSizePixel  = 0
         btn.Parent           = row
         Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
-
         btn.MouseButton1Click:Connect(function()
-            local newState = onToggle()
-            btn.Text             = newState and "ON" or "OFF"
-            btn.BackgroundColor3 = newState and Color3.fromRGB(0, 195, 75) or Color3.fromRGB(195, 45, 45)
+            local ns = onToggle()
+            btn.Text             = ns and "ON" or "OFF"
+            btn.BackgroundColor3 = ns
+                and Color3.fromRGB(0,195,75) or Color3.fromRGB(195,45,45)
         end)
         return btn
     end
 
-    -- Helper: create a status text label
-    local function makeStatus(yOff, color)
+    local function makeStatus(yOff, col)
         local lbl = Instance.new("TextLabel")
-        lbl.Size                = UDim2.new(1, -16, 0, 17)
-        lbl.Position            = UDim2.new(0, 8, 0, yOff)
+        lbl.Size                 = UDim2.new(1, -16, 0, 17)
+        lbl.Position             = UDim2.new(0, 8, 0, yOff)
         lbl.BackgroundTransparency = 1
-        lbl.TextColor3          = color or Color3.fromRGB(145, 145, 165)
-        lbl.TextScaled          = true
-        lbl.Font                = Enum.Font.Gotham
-        lbl.TextXAlignment      = Enum.TextXAlignment.Left
-        lbl.Text                = ""
-        lbl.Parent              = panel
+        lbl.TextColor3           = col or Color3.fromRGB(145,145,165)
+        lbl.TextScaled           = true
+        lbl.Font                 = Enum.Font.Gotham
+        lbl.TextXAlignment       = Enum.TextXAlignment.Left
+        lbl.Text                 = ""
+        lbl.Parent               = panel
         return lbl
     end
 
-    -- Toggle rows
     local y = 32
     local rH = 33
 
@@ -1626,25 +1367,21 @@ task.spawn(function()
     local sep = Instance.new("Frame")
     sep.Size             = UDim2.new(0.88, 0, 0, 1)
     sep.Position         = UDim2.new(0.06, 0, 0, y + 2)
-    sep.BackgroundColor3 = Color3.fromRGB(55, 55, 75)
+    sep.BackgroundColor3 = Color3.fromRGB(55,55,75)
     sep.BorderSizePixel  = 0
     sep.Parent           = panel
-    y = y + 9
+    y = y + 10
 
-    -- Status labels
-    HUD.lblAction  = makeStatus(y, Color3.fromRGB(145, 145, 175)); y = y + 20
-    HUD.lblTarget  = makeStatus(y);                                  y = y + 20
-    HUD.lblThreats = makeStatus(y, Color3.fromRGB(255, 90, 90));     y = y + 20
-    HUD.lblHP      = makeStatus(y, Color3.fromRGB(90, 220, 90));     y = y + 20
-    HUD.lblPing    = makeStatus(y);                                   y = y + 20
-    HUD.lblReload  = makeStatus(y);                                   y = y + 20
-    HUD.lblWeights = makeStatus(y, Color3.fromRGB(90, 190, 90))
+    HUD.lblAction  = makeStatus(y, Color3.fromRGB(145,145,175)); y = y + 20
+    HUD.lblTarget  = makeStatus(y);                               y = y + 20
+    HUD.lblThreats = makeStatus(y, Color3.fromRGB(255,90,90));    y = y + 20
+    HUD.lblHP      = makeStatus(y, Color3.fromRGB(90,220,90));    y = y + 20
+    HUD.lblPing    = makeStatus(y);                               y = y + 20
+    HUD.lblReload  = makeStatus(y, Color3.fromRGB(255,200,50));   y = y + 20
+    HUD.lblWeights = makeStatus(y, Color3.fromRGB(90,190,90))
 
     -- Drag logic
-    local dragging   = false
-    local dragStart  = nil
-    local panelStart = nil
-
+    local dragging, dragStart, panelStart = false, nil, nil
     titleBar.InputBegan:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1
         or inp.UserInputType == Enum.UserInputType.Touch then
@@ -1658,7 +1395,6 @@ task.spawn(function()
             end)
         end
     end)
-
     UserInputService.InputChanged:Connect(function(inp)
         if not dragging then return end
         if inp.UserInputType == Enum.UserInputType.MouseMovement
@@ -1675,81 +1411,78 @@ task.spawn(function()
     HUD.ready = true
 end)
 
--- Per-frame HUD refresh (throttled to every 8 frames)
-local hudTickCount = 0
+-- Per-frame HUD refresh (every 8 frames)
+local hudTick = 0
 local function refreshHUD(action, targetName, threatCount, hpVal, maxHpVal)
-    hudTickCount = hudTickCount + 1
-    if hudTickCount % 8 ~= 0 then return end
-    if not HUD.ready then return end
+    hudTick = hudTick + 1
+    if hudTick % 8 ~= 0 or not HUD.ready then return end
 
-    -- Action label with colour coding
     if HUD.lblAction then
         local txt, col
-        if     action == "dodge"       then txt = "⚡ DODGE";     col = Color3.fromRGB(80, 255, 80)
-        elseif action == "juke"        then txt = "🔄 JUKE";      col = Color3.fromRGB(255, 155, 50)
-        elseif action == "engage"      then txt = "🎯 ENGAGE";    col = Color3.fromRGB(255, 75, 75)
-        elseif action == "retreat"     then txt = "← RETREAT";    col = Color3.fromRGB(100, 185, 255)
-        elseif action == "navigate"    then txt = "▶ NAVIGATE";   col = Color3.fromRGB(210, 210, 90)
-        elseif action == "wait_reload" then txt = "↺ RELOAD";     col = Color3.fromRGB(255, 220, 50)
-        else                                txt = "◉ IDLE";       col = Color3.fromRGB(130, 130, 150)
+        if     action == "dodge"       then txt="⚡ DODGE";   col=Color3.fromRGB(80,255,80)
+        elseif action == "juke"        then txt="🔄 JUKE";    col=Color3.fromRGB(255,155,50)
+        elseif action == "engage"      then txt="🎯 ENGAGE";  col=Color3.fromRGB(255,75,75)
+        elseif action == "retreat"     then txt="← RETREAT";  col=Color3.fromRGB(100,185,255)
+        elseif action == "navigate"    then txt="▶ NAVIGATE"; col=Color3.fromRGB(210,210,90)
+        elseif action == "wait_reload" then txt="↺ RELOAD";   col=Color3.fromRGB(255,220,50)
+        else                                txt="◉ IDLE";     col=Color3.fromRGB(130,130,150)
         end
         HUD.lblAction.Text       = txt
         HUD.lblAction.TextColor3 = col
     end
 
-    if HUD.lblTarget  then HUD.lblTarget.Text  = "Target  : " .. (targetName or "—") end
+    if HUD.lblTarget  then
+        HUD.lblTarget.Text = "Target  : " .. (targetName or "—")
+    end
     if HUD.lblThreats then
         HUD.lblThreats.Text       = "Threats : " .. (threatCount or 0)
         HUD.lblThreats.TextColor3 = (threatCount and threatCount > 0)
-            and Color3.fromRGB(255, 75, 75) or Color3.fromRGB(145, 145, 165)
+            and Color3.fromRGB(255,75,75) or Color3.fromRGB(145,145,165)
     end
     if HUD.lblHP then
         local hpRatio = (hpVal or 100) / math.max(maxHpVal or 100, 1)
         HUD.lblHP.Text       = string.format("HP      : %d / %d", hpVal or 0, maxHpVal or 100)
         HUD.lblHP.TextColor3 = hpRatio < 0.35
-            and Color3.fromRGB(255, 80, 80)
-            or  Color3.fromRGB(80, 225, 90)
+            and Color3.fromRGB(255,80,80) or Color3.fromRGB(80,225,90)
     end
-    if HUD.lblPing   then
-        HUD.lblPing.Text   = string.format("Ping    : %d ms", math.floor(estimatedPing * 1000))
+    if HUD.lblPing then
+        HUD.lblPing.Text = string.format("Ping    : %d ms",
+            math.floor(estimatedPingSeconds * 1000))
     end
     if HUD.lblReload then
         local rPct = math.floor(getReloadFraction() * 100)
         HUD.lblReload.Text       = string.format("Reload  : %d %%", rPct)
-        HUD.lblReload.TextColor3 = rPct < 25
-            and Color3.fromRGB(255, 75, 75) or Color3.fromRGB(100, 225, 100)
+        HUD.lblReload.TextColor3 = rPct < 30
+            and Color3.fromRGB(255,75,75) or Color3.fromRGB(100,225,100)
     end
     if HUD.lblWeights then
         HUD.lblWeights.Text = string.format(
             "w[e=%.2f d=%.2f j=%.2f n=%.2f]",
-            Brain.w.engage, Brain.w.dodge, Brain.w.juke, Brain.w.navigate
-        )
+            Brain.w.engage, Brain.w.dodge, Brain.w.juke, Brain.w.navigate)
     end
 
-    -- Reload bar visibility
+    -- Reload bar
     if HUD.rBarBG and HUD.rBar then
+        HUD.rBarBG.Visible = reloadActive
         if reloadActive then
-            HUD.rBarBG.Visible = true
             HUD.rBar.Size = UDim2.new(getReloadFraction(), 0, 1, 0)
-        else
-            HUD.rBarBG.Visible = false
         end
     end
 end
 
 -- ════════════════════════════════════════════════════════════════════════
---  §21  MAIN LOOP STATE VARIABLES
+--  §22  MAIN LOOP STATE
 -- ════════════════════════════════════════════════════════════════════════
-local dodgeActive      = false
-local extraActive      = false
-local extraDir         = Vector3.new(1, 0, 0)
-local extraTargetPos   = nil
-local extraStartTime   = 0
-local lastMoveDir      = Vector3.new(1, 0, 0)
+local dodgeActive    = false
+local extraActive    = false
+local extraDir       = Vector3.new(1,0,0)
+local extraTargetPos = nil
+local extraStartTime = 0
+local lastMoveDir    = Vector3.new(1,0,0)
 
-local currentAction    = "idle"
-local currentTarget    = nil
-local currentAimPoint  = nil
+local currentAction  = "idle"
+local currentTarget  = nil
+local currentAimPoint = nil
 
 local prevLocalHP      = 100
 local prevEnemyHPMap   = {}
@@ -1761,7 +1494,7 @@ local frameCount        = 0
 local lastFrameTime     = os.clock()
 
 -- ════════════════════════════════════════════════════════════════════════
---  §22  MAIN RENDER-STEPPED LOOP
+--  §23  MAIN RENDER-STEPPED LOOP
 -- ════════════════════════════════════════════════════════════════════════
 RunService.RenderStepped:Connect(function()
     local now = os.clock()
@@ -1769,40 +1502,39 @@ RunService.RenderStepped:Connect(function()
     lastFrameTime = now
     frameCount    = frameCount + 1
 
-    -- ── §22.1  Projectile velocity refinement ─────────────────────────
+    -- §23.1  Projectile velocity refinement
     updateProjectileVelocities(dt)
 
-    -- ── §22.2  Character validity ─────────────────────────────────────
+    -- §23.2  Character validity
     local char = LocalPlayer.Character
     if not char then releaseAll(); return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then releaseAll(); return end
-
-    -- Ensure cache is valid
     if not charHRP or charHRP.Parent ~= char or #charParts == 0 then
         rebuildCharCache(char)
     end
 
-    local hrpPos    = hrp.Position
-    local feetY     = getFeetY()
+    local hrpPos        = hrp.Position
+    local feetY         = getFeetY()
     local myHP, myMaxHP = getLocalHP()
 
-    -- ── §22.3  Periodic: ping + entity registry ────────────────────────
-    if now - clockPingUpdate > 2.0 then
+    -- §23.3  Ping update (every 3 s)
+    if now - clockPingUpdate > 3.0 then
         clockPingUpdate = now
-        task.spawn(updatePingEstimate)
+        task.spawn(updatePing)
     end
 
+    -- §23.4  Entity registry update (every 50 ms)
     if now - clockEntityUpdate > 0.05 then
         clockEntityUpdate = now
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and isEnemy(plr) then
+            if plr ~= LocalPlayer then
                 registryUpdate(plr, dt)
             end
         end
     end
 
-    -- ── §22.4  Threat detection (knives / projectiles) ─────────────────
+    -- §23.5  Threat detection
     local threats = {}
     for _, part in ipairs(projList) do
         local data = projData[part]
@@ -1812,34 +1544,33 @@ RunService.RenderStepped:Connect(function()
         end
     end
     if #threats > 1 then
-        table.sort(threats, function(a, b) return a.t < b.t end)
+        table.sort(threats, function(a,b) return a.t < b.t end)
     end
 
-    -- ── §22.5  Visibility scan for all tracked enemies ─────────────────
+    -- §23.6  Visibility scan (every enemy, every frame for accuracy)
     local originPos = Camera.CFrame.Position
     for plr, entry in pairs(EntityRegistry) do
         if isEnemy(plr) and plr.Character then
-            local vis, total, frac, _ = atomicLoS(plr.Character, originPos)
+            local _, _, frac, _ = atomicLoS(plr.Character, originPos)
             entry.wasVisible  = entry.isVisible
             entry.isVisible   = frac >= CFG.WallCheckStrict
             entry.visFraction = frac
         end
     end
 
-    -- ── §22.6  Aim target selection ────────────────────────────────────
+    -- §23.7  Aim target selection (nearest enemy, no FOV gate)
     if CFG.AutoAimEnabled then
         local aimPlr, aimPt = selectAimTarget()
         if aimPlr and aimPt then
             currentTarget   = aimPlr
             currentAimPoint = aimPt
         elseif not currentTarget then
-            -- No aim target: try closest enemy in registry
-            local cp, ce, cd = getClosestEnemyToPos(hrpPos)
+            local cp, _, _ = getClosestEnemyToPos(hrpPos)
             if cp then currentTarget = cp end
         end
     end
 
-    -- Validate currentTarget is still alive
+    -- Validate current target still alive
     if currentTarget then
         local ce = EntityRegistry[currentTarget]
         if not ce or ce.health <= 0 or not currentTarget.Character then
@@ -1848,7 +1579,7 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ── §22.7  Brain decision ──────────────────────────────────────────
+    -- §23.8  Brain decision
     local targetEntry = currentTarget and EntityRegistry[currentTarget]
     local targetDist  = targetEntry and (targetEntry.pos - hrpPos).Magnitude or 999
     local inMelee     = targetDist <= CFG.MeleeRange
@@ -1867,34 +1598,28 @@ RunService.RenderStepped:Connect(function()
         hasTarget    = currentTarget ~= nil,
         targetHP     = targetEntry and targetEntry.health or 0,
     }
-
     local action, _ = brainDecide(ctx)
     currentAction   = action
 
-    -- ── §22.8  Reward computation (online learning) ────────────────────
+    -- §23.9  Online learning rewards
     local hpDelta = myHP - prevLocalHP
     if hpDelta < -2 then
-        -- We took damage — penalise whatever action just ran
         brainReward(-1.2)
     elseif hpDelta > 0 then
-        -- Healed / no damage — mild positive
         brainReward(0.15)
     end
-
     if currentTarget and targetEntry then
-        local prevEHP = prevEnemyHPMap[currentTarget] or targetEntry.health
+        local prevEHP    = prevEnemyHPMap[currentTarget] or targetEntry.health
         local enemyDelta = targetEntry.health - prevEHP
         if enemyDelta < -2 then
-            -- We hit the enemy — reward engage
             brainReward(1.6)
-            Brain.w.engage = Brain.w.engage + CFG.LearningRate * 0.5
-            Brain.w.engage = math.min(Brain.w.engage, CFG.WeightClampHi)
+            Brain.w.engage = math.min(Brain.w.engage + CFG.LearningRate * 0.5, CFG.WeightClampHi)
         end
         prevEnemyHPMap[currentTarget] = targetEntry.health
     end
     prevLocalHP = myHP
 
-    -- ── §22.9  ACTION EXECUTION ────────────────────────────────────────
+    -- §23.10  ACTION EXECUTION ─────────────────────────────────────────
 
     -- ─ DODGE ─────────────────────────────────────────────────────────
     if action == "dodge" and CFG.DodgeEnabled and #threats > 0 then
@@ -1902,17 +1627,16 @@ RunService.RenderStepped:Connect(function()
         if dodgeDir then
             dodgeActive = true
             lastMoveDir = dodgeDir
+            -- Orient camera toward dodge direction so WASD stays aligned
+            setCameraFacing(dodgeDir)
             fireKeys(dodgeDir)
-
-            -- Gravity-aware jump: if knife is aimed at foot height
             for i = 1, math.min(2, #threats) do
                 if threats[i].needJump then doJump(); break end
             end
         end
         extraActive    = false
         extraTargetPos = nil
-
-        -- Dodge does NOT stop aiming/shooting
+        -- Continue aiming and shooting while dodging
         if CFG.AutoAimEnabled and currentAimPoint then
             applyAim(currentAimPoint)
             if CFG.AutoShootEnabled and canShoot() and hasLoS then
@@ -1925,8 +1649,7 @@ RunService.RenderStepped:Connect(function()
         dodgeActive = false
         extraActive = false
         executeJuke(hrpPos, now)
-
-        -- Keep aiming at enemy while the character jukes
+        -- Camera aims at enemy; character moves independently via fireKeys
         if CFG.AutoAimEnabled and currentAimPoint then
             applyAim(currentAimPoint)
         end
@@ -1935,17 +1658,17 @@ RunService.RenderStepped:Connect(function()
     elseif action == "engage" and currentAimPoint then
         dodgeActive = false
 
-        -- Pixel-perfect aim snap (instant bullet = direct snap to predicted point)
+        -- Direct pixel-perfect aim snap (no prediction)
         if CFG.AutoAimEnabled then
             applyAim(currentAimPoint)
         end
 
-        -- Shoot if loaded
+        -- Shoot if reloaded
         if CFG.AutoShootEnabled and canShoot() and hasLoS then
             doShoot()
         end
 
-        -- While engaging: close distance if too far, strafe if in range
+        -- Navigate/strafe using camera as movement reference frame
         if CFG.AutoNavEnabled and targetDist > CFG.EngageMoveRange then
             if now - clockMCTS > CFG.MCTSInterval then
                 clockMCTS = now
@@ -1957,20 +1680,21 @@ RunService.RenderStepped:Connect(function()
             end
             if MCTSCache.bestDirection then
                 local mvDir = MCTSCache.bestDirection
+                -- Orient camera to movement direction for engage nav
+                setCameraFacing(mvDir)
                 local yc, cls = getYCorrectionForDir(hrpPos, mvDir)
                 if cls == "ledge" then
-                    -- Skirt the edge
                     local alt = Vector3.new(-mvDir.Z, 0, mvDir.X)
+                    setCameraFacing(alt)
                     fireKeys(alt)
                 elseif shouldJumpForObstacle(yc, cls) then
-                    fireKeys(mvDir)
-                    doJump()
+                    fireKeys(mvDir); doJump()
                 else
                     fireKeys(mvDir)
                 end
             end
         elseif CFG.AutoNavEnabled and targetDist <= CFG.EngageMoveRange then
-            -- In optimal range: strafing side-to-side to be harder to hit
+            -- In range: strafe to avoid incoming fire
             local strafeDir = Vector3.new(-lastMoveDir.Z, 0, lastMoveDir.X)
                             * (math.sin(now * 2.8) > 0 and 1 or -1)
             fireKeys(strafeDir)
@@ -1979,8 +1703,6 @@ RunService.RenderStepped:Connect(function()
     -- ─ RETREAT ───────────────────────────────────────────────────────
     elseif action == "retreat" then
         dodgeActive = false
-
-        -- Compute composite retreat direction (away from all enemies)
         local retreatDir = Vector3.new()
         for plr, entry in pairs(EntityRegistry) do
             if isEnemy(plr) and entry.health > 0 then
@@ -1994,10 +1716,11 @@ RunService.RenderStepped:Connect(function()
         if retreatDir.Magnitude > 0.01 then
             retreatDir  = retreatDir.Unit
             lastMoveDir = retreatDir
+            -- Orient camera to retreat direction
+            setCameraFacing(retreatDir)
             fireKeys(retreatDir)
         end
-
-        -- Continue aiming while retreating (can shoot during retreat)
+        -- Still aim and shoot while retreating
         if CFG.AutoAimEnabled and currentAimPoint then
             applyAim(currentAimPoint)
             if CFG.AutoShootEnabled and canShoot() and hasLoS then
@@ -2008,141 +1731,149 @@ RunService.RenderStepped:Connect(function()
     -- ─ WAIT / RELOAD ─────────────────────────────────────────────────
     elseif action == "wait_reload" then
         dodgeActive = false
-        --Evasive lateral movement during reload window
-local strafeDir = Vector3.new(-lastMoveDir.Z, 0, lastMoveDir.X)
-* (math.sin(now * 3.2) > 0 and 1 or -1)
-fireKeys(strafeDir)
--- Keep aim locked during reload
-    if CFG.AutoAimEnabled and currentAimPoint then
-        applyAim(currentAimPoint)
-    end
-
--- ─ NAVIGATE ──────────────────────────────────────────────────────
-elseif action == "navigate" and CFG.AutoNavEnabled then
-    dodgeActive = false
-
-    local goalPos = nil
-    if currentTarget and targetEntry then
-        goalPos = predictEnemyPosition(currentTarget, 0)
-    end
-
-    if goalPos then
-        if now - clockMCTS > CFG.MCTSInterval then
-            clockMCTS = now
-            local dir = mctsSearch(hrpPos, goalPos, CFG.MCTSSimulations)
-            if dir then
-                lastMoveDir             = dir
-                MCTSCache.bestDirection = dir
-                MCTSCache.goalPos       = goalPos
-            end
+        -- Evasive lateral movement during reload; camera follows strafe
+        local strafeDir = Vector3.new(-lastMoveDir.Z, 0, lastMoveDir.X)
+                        * (math.sin(now * 3.2) > 0 and 1 or -1)
+        -- Orient camera toward strafe direction so W moves correctly
+        setCameraFacing(strafeDir)
+        fireKeys(strafeDir)
+        -- Keep aim on target even while reloading
+        if CFG.AutoAimEnabled and currentAimPoint then
+            applyAim(currentAimPoint)
         end
 
-        local mvDir = MCTSCache.bestDirection
-        if mvDir then
-            local yc, cls = getYCorrectionForDir(hrpPos, mvDir)
-            if cls == "ledge" then
-                local alt = Vector3.new(-mvDir.Z, 0, mvDir.X)
-                fireKeys(alt)
-            elseif shouldJumpForObstacle(yc, cls) then
-                fireKeys(mvDir)
-                doJump()
-            else
-                fireKeys(mvDir)
+    -- ─ NAVIGATE ──────────────────────────────────────────────────────
+    elseif action == "navigate" and CFG.AutoNavEnabled then
+        dodgeActive = false
+        local goalPos = nil
+        if currentTarget and targetEntry then
+            goalPos = predictEnemyPosition(currentTarget, 0)
+        end
+        if goalPos then
+            if now - clockMCTS > CFG.MCTSInterval then
+                clockMCTS = now
+                local dir = mctsSearch(hrpPos, goalPos, CFG.MCTSSimulations)
+                if dir then
+                    lastMoveDir             = dir
+                    MCTSCache.bestDirection = dir
+                    MCTSCache.goalPos       = goalPos
+                end
             end
+            local mvDir = MCTSCache.bestDirection
+            if mvDir then
+                -- Camera faces movement direction for correct WASD mapping
+                setCameraFacing(mvDir)
+                local yc, cls = getYCorrectionForDir(hrpPos, mvDir)
+                if cls == "ledge" then
+                    local alt = Vector3.new(-mvDir.Z, 0, mvDir.X)
+                    setCameraFacing(alt)
+                    fireKeys(alt)
+                elseif shouldJumpForObstacle(yc, cls) then
+                    fireKeys(mvDir); doJump()
+                else
+                    fireKeys(mvDir)
+                end
+                updateStuck(hrpPos, mvDir, now)
+            end
+        else
+            releaseAll()
+        end
 
-            -- Anti-stuck injection
-            updateStuck(hrpPos, mvDir, now)
+    -- ─ IDLE ──────────────────────────────────────────────────────────
+    else
+        dodgeActive = false
+        if not extraActive then releaseAll() end
+    end
+
+    -- §23.11  Post-dodge burst momentum
+    if not dodgeActive then
+        if extraActive then
+            local target = extraTargetPos or (hrpPos + extraDir * CFG.ExtraBurstDistance)
+            local hVec   = Vector3.new(hrpPos.X,  0, hrpPos.Z)
+            local tVec   = Vector3.new(target.X,  0, target.Z)
+            if (hVec - tVec).Magnitude > 0.35
+            and now < extraStartTime + CFG.ExtraMaxBurstTime then
+                setCameraFacing(extraDir)
+                fireKeys(extraDir)
+            else
+                extraActive    = false
+                extraTargetPos = nil
+            end
         end
     else
-        -- No target: hold position
-        releaseAll()
+        extraActive    = true
+        extraDir       = lastMoveDir
+        extraTargetPos = hrpPos + lastMoveDir * CFG.ExtraBurstDistance
+        extraStartTime = now
     end
 
--- ─ IDLE ──────────────────────────────────────────────────────────
-else
-    dodgeActive = false
-    if not extraActive then releaseAll() end
-end
-
--- ── §22.10  Extra-burst momentum after dodge ───────────────────────
-if dodgeActive == false then
-    -- If just exited dodge, arm the burst
-    if extraActive then
-        local target = extraTargetPos or (hrpPos + extraDir * CFG.ExtraBurstDistance)
-        local horiz  = Vector3.new(hrpPos.X, 0, hrpPos.Z)
-        local tH     = Vector3.new(target.X,  0, target.Z)
-        if (horiz - tH).Magnitude > 0.35 and now < extraStartTime + CFG.ExtraMaxBurstTime then
-            fireKeys(extraDir)
-        else
-            extraActive    = false
-            extraTargetPos = nil
-        end
-    end
-else
-    -- Arm burst for next cycle
-    extraActive    = true
-    extraDir       = lastMoveDir
-    extraTargetPos = hrpPos + lastMoveDir * CFG.ExtraBurstDistance
-    extraStartTime = now
-end
-
--- ── §22.11  HUD refresh ────────────────────────────────────────────
-local tName = currentTarget and currentTarget.Name or nil
-refreshHUD(currentAction, tName, #threats, myHP, myMaxHP)
+    -- §23.12  HUD refresh
+    local tName = currentTarget and currentTarget.Name or nil
+    refreshHUD(currentAction, tName, #threats, myHP, myMaxHP)
 end)
+
 -- ════════════════════════════════════════════════════════════════════════
---  §23  CHARACTER RESPAWN HANDLER
+--  §24  CHARACTER RESPAWN
 -- ════════════════════════════════════════════════════════════════════════
 local function onCharAdded(char)
-task.wait(0.2)
-rebuildCharCache(char)
-dodgeActive    = false
-extraActive    = false
-extraTargetPos = nil
-currentTarget  = nil
-currentAimPoint = nil
-MCTSCache.bestDirection = nil
-JukeState.active = false
-releaseAll()
--- Re-apply camera to custom to ensure aim control
-Camera.CameraType = Enum.CameraType.Custom
+    task.wait(0.2)
+    rebuildCharCache(char)
+    dodgeActive     = false
+    extraActive     = false
+    extraTargetPos  = nil
+    currentTarget   = nil
+    currentAimPoint = nil
+    MCTSCache.bestDirection = nil
+    JukeState.active = false
+    releaseAll()
+    Camera.CameraType = Enum.CameraType.Custom
 end
+
 LocalPlayer.CharacterAdded:Connect(onCharAdded)
 if LocalPlayer.Character then
-task.spawn(function()
-task.wait(0.1)
-rebuildCharCache(LocalPlayer.Character)
-end)
+    task.spawn(function() task.wait(0.1); rebuildCharCache(LocalPlayer.Character) end)
 end
+
 -- ════════════════════════════════════════════════════════════════════════
---  §24  PLAYER REGISTRY EVENTS  — keep entity table clean
+--  §25  PLAYER REGISTRY EVENTS
 -- ════════════════════════════════════════════════════════════════════════
 Players.PlayerAdded:Connect(function(plr)
-setupPlayerESP(plr)
-plr.CharacterAdded:Connect(function()
-task.wait(0.1)
-registryEnsure(plr)
+    setupPlayerESP(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.1); registryEnsure(plr)
+    end)
+    plr.CharacterRemoving:Connect(function()
+        EntityRegistry[plr] = nil
+    end)
 end)
-plr.CharacterRemoving:Connect(function()
-EntityRegistry[plr] = nil
-end)
-end)
+
 Players.PlayerRemoving:Connect(function(plr)
-EntityRegistry[plr] = nil
-removeESP(plr)
-prevEnemyHPMap[plr] = nil
+    EntityRegistry[plr]    = nil
+    prevEnemyHPMap[plr]    = nil
+    removeESP(plr)
 end)
+
 for _, plr in ipairs(Players:GetPlayers()) do
-if plr ~= LocalPlayer then
-plr.CharacterAdded:Connect(function()
-task.wait(0.1)
-registryEnsure(plr)
+    if plr ~= LocalPlayer then
+        plr.CharacterAdded:Connect(function()
+            task.wait(0.1); registryEnsure(plr)
+        end)
+        plr.CharacterRemoving:Connect(function()
+            EntityRegistry[plr] = nil
+        end)
+        if plr.Character then registryEnsure(plr) end
+    end
+end
+
+-- ════════════════════════════════════════════════════════════════════════
+--  §26  STARTUP NOTIFICATION
+-- ════════════════════════════════════════════════════════════════════════
+task.delay(1.0, function()
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title    = "Autoplayer",
+            Text     = "Loaded!",
+            Duration = 3,
+        })
+    end)
 end)
-plr.CharacterRemoving:Connect(function()
-EntityRegistry[plr] = nil
-end)
-if plr.Character then
-registryEnsure(plr)
-end
-end
-end

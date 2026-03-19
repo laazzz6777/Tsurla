@@ -203,6 +203,12 @@ local Cfg = {
 
     PATH_WAYPOINT_REACH  = 2.5,
     PATH_REPLAN_INTERVAL = 0.65,
+    -- Long-path auto detection
+    LONGPATH_DIST_THRESH = 30.0,   -- straight-line dist that triggers long-path mode
+    LONGPATH_WP_THRESH   = 5,      -- waypoint count that confirms long path
+    LONGPATH_RRT_NODES   = 55,     -- boosted node count for complex paths
+    LONGPATH_RRT_STEP    = 4.5,    -- longer step to cover more ground
+    LONGPATH_REPLAN      = 0.40,   -- replan faster on long paths
 
     OPEN_SEEK_RADIUS     = 8.0,
     OPEN_DIR_UPDATE_RATE = 0.22,
@@ -360,6 +366,10 @@ local _cornerScoreTimer     = 0
 
 local StrategicGoal = { mode="none", target=nil, expires=0, dumpScore=0 }
 local PathFollowing = { active=false, waypoints={}, targetPlayer=nil, lastReplan=0 }
+-- Long-path detection state
+local LongPathMode   = false    -- true when AI is navigating a complex/long route
+local LongPathTimer  = 0        -- how long we've been on a long path
+local LongPathDistPrev = 0      -- previous dist to target for progress check
 local JukeState     = { active=false, jukeType=nil, phase=0, timer=0, phases=nil,
                         lockedMove=Vector3.zero, lockedFace=Vector3.zero }
 local BaitState     = { active=false, phase="display", timer=0,
@@ -416,7 +426,13 @@ local function dLeakyReLU(x) return x>0 and 1 or 0.1 end
 
 local function GetRoot(p) local c=p.Character; return c and c:FindFirstChild("HumanoidRootPart") or nil end
 local function GetPos(p)  local r=GetRoot(p);  return r and r.Position or nil end
-local function GetVel(p)  local r=GetRoot(p);  return r and r.Velocity or Vector3.zero end
+local function GetVel(p)
+    local r=GetRoot(p); if not r then return Vector3.zero end
+    local ok,v=pcall(function() return r.AssemblyLinearVelocity end)
+    if ok and v then return v end
+    local ok2,v2=pcall(function() return r.Velocity end)
+    return (ok2 and v2) or Vector3.zero
+end
 local function Alive(p)
     local c=p.Character; if not c then return false end
     local h=c:FindFirstChildOfClass("Humanoid"); return h and h.Health>0 or false
@@ -617,11 +633,12 @@ local function RefreshOpenSpaceDir(myPos)
     for i=0,7 do
         local a=(i/8)*math.pi*2
         local dir=Vector3.new(math.cos(a),0,math.sin(a))
-        if HBCast(myPos, dir, Cfg.WALL_HARD_DIST+0.3) then continue end
-        local probe=myPos+dir*4.5
-        local score=OpenSpace4(probe, Cfg.OPEN_SEEK_RADIUS)
-                  + dir:Dot(SafeN(Flat(OpenSpaceDir)))*1.8
-        if score>bestScore then bestScore=score; bestDir=dir end
+        if not HBCast(myPos, dir, Cfg.WALL_HARD_DIST+0.3) then
+            local probe=myPos+dir*4.5
+            local score=OpenSpace4(probe, Cfg.OPEN_SEEK_RADIUS)
+                      + dir:Dot(SafeN(Flat(OpenSpaceDir)))*1.8
+            if score>bestScore then bestScore=score; bestDir=dir end
+        end
     end
     OpenSpaceDir=bestDir
 end
@@ -664,11 +681,12 @@ local function FindOpenCorridor(origin, preferredDir)
             end
         end
         local clearance=MinCorridorClearance(origin,dir,2,probeD*0.4)
-        if clearance<minPassWidth then continue end
-        local score=minDist
-            -(1-dir:Dot(preferredDir))*probeD*0.38
-            +dir:Dot(curMoveDir)*probeD*Cfg.CORRIDOR_CONTINUITY
-        if score>bestScore then bestScore=score; bestDir=dir end
+        if clearance>=minPassWidth then
+            local score=minDist
+                -(1-dir:Dot(preferredDir))*probeD*0.38
+                +dir:Dot(curMoveDir)*probeD*Cfg.CORRIDOR_CONTINUITY
+            if score>bestScore then bestScore=score; bestDir=dir end
+        end
     end
     return ApplyMarginBuffer(origin,bestDir)
 end
@@ -708,7 +726,7 @@ local function TryAiJump(myPos, movingDir)
     local hrp=char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
     local hum=char:FindFirstChildOfClass("Humanoid"); if not hum then return end
     if hum.FloorMaterial==Enum.Material.Air then return end
-    local speed=Flat(hrp.AssemblyLinearVelocity).Magnitude
+    local speed=Flat(GetHRPVel(hrp)).Magnitude
     if speed<Cfg.JUMP_MIN_SPEED and AntiStuckTimer<=0 then return end
     local dir=SafeN(Flat(movingDir)); local rp=MakeRP(); local halfH=hrp.Size.Y*0.5
     local kneeSrc=myPos+Vector3.new(0,halfH*Cfg.JUMP_STEP_LOW, 0)
@@ -817,8 +835,8 @@ function DeepNN:forward(input)
     for l = 1, self.L - 1 do
         local inAct  = acts[l]
         local outSz  = self.sizes[l+1]
-        local out    = table.create(outSz)
-        local pre    = table.create(outSz)
+        local out    = {}
+        local pre    = {}
         local Wl     = self.W[l]
         local bl     = self.b[l]
         local isLast = (l == self.L - 1)
@@ -844,7 +862,7 @@ function DeepNN:backward(target, acts, pres)
     -- Compute output delta (MSE gradient: dL/d_out = out - target)
     local deltas   = {}
     local outAct   = acts[L]
-    local dOut     = table.create(sz[L])
+    local dOut     = {}
     for i = 1, sz[L] do
         dOut[i] = outAct[i] - target[i]
     end
@@ -857,7 +875,7 @@ function DeepNN:backward(target, acts, pres)
         local preL   = pres[l]
         local sz_l   = sz[l+1]
         local sz_l1  = sz[l+2]
-        local dCur   = table.create(sz_l)
+        local dCur   = {}
         for j = 1, sz_l do
             local err = 0
             for i = 1, sz_l1 do
@@ -947,10 +965,10 @@ end
 local NNRegistry    = {}       -- NNRegistry[playerName] = DeepNN (opponent net)
 local DecisionNet   = nil      -- local player decision network
 
--- Opponent net: 32 inputs → 256→128→64 → 8 outputs
-local OPP_LAYERS  = {32, 256, 128, 64, 8}
--- Decision net:  40 inputs → 256→256→128→64 → 10 outputs
-local DEC_LAYERS  = {40, 256, 256, 128, 64, 10}
+-- Opponent net: 32 inputs → 64→32 → 8 outputs  (Delta-safe)
+local OPP_LAYERS  = {32, 64, 32, 8}
+-- Decision net:  40 inputs → 64→32 → 10 outputs (Delta-safe)
+local DEC_LAYERS  = {40, 64, 32, 10}
 
 local function GetOppNet(name)
     if not NNRegistry[name] then
@@ -1113,7 +1131,7 @@ local function TrainDecisionNet(prevSnap, myPos, didImprove)
     -- We form a target by nudging the previous output toward better values
     local alpha   = 0.25
     local out     = prevSnap.output
-    local tgt     = table.create(#out)
+    local tgt     = {}
     for i=1,#out do tgt[i] = out[i] end
     -- Reinforce move direction that led to improvement
     if didImprove > 0 then
@@ -1414,18 +1432,21 @@ local function GetThreatData(myPos)
     local threats={}
     for _,p in ipairs(Players:GetPlayers()) do
         if p~=LocalPlayer and Alive(p) then
-            local pos=GetPos(p); if not pos then continue end
-            local vel=Flat(GetVel(p))
-            local dist=(pos-myPos).Magnitude
-            local pingComp=GetPing()*2.0
-            local futurePos=pos+vel*(Cfg.THREAT_ANTICIPATE_T+pingComp)
-            local effectiveDist=math.min(dist,(futurePos-myPos).Magnitude)
-            if effectiveDist>Cfg.THREAT_RADIUS then continue end
-            local isBomber=HasTool(p)
-            local bw=(1-(effectiveDist/Cfg.THREAT_RADIUS))^2*(isBomber and 2.5 or 1)
-            local ps=GetMem(p).psych
-            bw=bw*(1+ps.aggression*0.5)*(ps.wallAffinity>0.6 and 0.85 or 1.0)
-            table.insert(threats,{pos=pos,vel=vel,weight=bw,isBomber=isBomber,playerName=p.Name,psych=ps})
+            local pos=GetPos(p)
+            if pos then
+                local vel=Flat(GetVel(p))
+                local dist=(pos-myPos).Magnitude
+                local pingComp=GetPing()*2.0
+                local futurePos=pos+vel*(Cfg.THREAT_ANTICIPATE_T+pingComp)
+                local effectiveDist=math.min(dist,(futurePos-myPos).Magnitude)
+                if effectiveDist<=Cfg.THREAT_RADIUS then
+                    local isBomber=HasTool(p)
+                    local bw=(1-(effectiveDist/Cfg.THREAT_RADIUS))^2*(isBomber and 2.5 or 1)
+                    local ps=GetMem(p).psych
+                    bw=bw*(1+ps.aggression*0.5)*(ps.wallAffinity>0.6 and 0.85 or 1.0)
+                    table.insert(threats,{pos=pos,vel=vel,weight=bw,isBomber=isBomber,playerName=p.Name,psych=ps})
+                end
+            end
         end
     end
     return threats
@@ -1516,10 +1537,12 @@ local function MonteCarloEscape(myPos,threats,preferredAway)
     local s1Results={}
     for _,candRaw in ipairs(s1Cands) do
         local cand=SafeN(Flat(candRaw))
-        if HBCast(myPos,cand,Cfg.WALL_HARD_DIST+0.5) then continue end
-        local eP,eD,valid=simPath(myPos,cand,Cfg.MC_STEPS,microDt1)
-        if not valid then continue end
-        table.insert(s1Results,{dir=cand,endPos=eP,endDir=eD,score=scorePoint(eP,halfH)})
+        if not HBCast(myPos,cand,Cfg.WALL_HARD_DIST+0.5) then
+            local eP,eD,valid=simPath(myPos,cand,Cfg.MC_STEPS,microDt1)
+            if valid then
+                table.insert(s1Results,{dir=cand,endPos=eP,endDir=eD,score=scorePoint(eP,halfH)})
+            end
+        end
     end
     if #s1Results==0 then return preferredAway end
     table.sort(s1Results,function(a,b) return a.score>b.score end)
@@ -1530,11 +1553,13 @@ local function MonteCarloEscape(myPos,threats,preferredAway)
         for j=0,Cfg.MC_SPLITS-1 do
             local a=(j/Cfg.MC_SPLITS)*math.pi*2+math.random()*Cfg.MC_NOISE
             local cand2=Vector3.new(math.cos(a),0,math.sin(a))
-            if HBCast(s1.endPos,cand2,Cfg.WALL_HARD_DIST+0.5) then continue end
-            local eP2,_,valid2=simPath(s1.endPos,cand2,Cfg.MC_STEPS,microDt2)
-            if not valid2 then continue end
-            local total=s1.score*0.45+scorePoint(eP2,Cfg.MC_HORIZON)*0.55
-            if total>bestScore then bestScore=total; bestDir=s1.dir end
+            if not HBCast(s1.endPos,cand2,Cfg.WALL_HARD_DIST+0.5) then
+                local eP2,_,valid2=simPath(s1.endPos,cand2,Cfg.MC_STEPS,microDt2)
+                if valid2 then
+                    local total=s1.score*0.45+scorePoint(eP2,Cfg.MC_HORIZON)*0.55
+                    if total>bestScore then bestScore=total; bestDir=s1.dir end
+                end
+            end
         end
     end
     return bestDir
@@ -1663,11 +1688,43 @@ local function RequestPathTo(targetPlayer)
     if not targetPlayer or not Alive(targetPlayer) then PathFollowing.active=false; return end
     local myPos=GetPos(LocalPlayer); local targetPos=GetPos(targetPlayer)
     if not myPos or not targetPos then return end
-    local path=RRTStarPath(myPos,targetPos,Cfg.RRT_NODES,Cfg.RRT_STEP)
+    local straightDist=(targetPos-myPos).Magnitude
+
+    -- Auto-detect if this needs a long/complex path:
+    -- 1. Straight-line distance is large, OR
+    -- 2. LOS is blocked (wall between us)
+    local rp=MakeRP()
+    local losResult=Workspace:Raycast(myPos, SafeN(Flat(targetPos-myPos))*straightDist, rp)
+    local losBlocked=(losResult~=nil) and not IsTraversable(losResult)
+
+    -- Scale RRT parameters based on complexity
+    local nodes=Cfg.RRT_NODES
+    local step=Cfg.RRT_STEP
+    local isLong=false
+    if straightDist>=Cfg.LONGPATH_DIST_THRESH or losBlocked then
+        -- Long or obstructed path — use boosted parameters
+        -- Scale nodes further with distance so very far targets get even more search budget
+        local distScale=math.clamp(straightDist/Cfg.LONGPATH_DIST_THRESH,1,3)
+        nodes=math.floor(Cfg.LONGPATH_RRT_NODES*distScale)
+        step=Cfg.LONGPATH_RRT_STEP
+        isLong=true
+    end
+
+    local path=RRTStarPath(myPos,targetPos,nodes,step)
+    -- If first attempt fails on a long path, retry with even more nodes
+    if not path and isLong then
+        path=RRTStarPath(myPos,targetPos,nodes*2,step*1.2)
+    end
+
     if path and #path>1 then
         PathFollowing.waypoints=path; PathFollowing.active=true
         PathFollowing.targetPlayer=targetPlayer; PathFollowing.lastReplan=os.clock()
-    else PathFollowing.active=false end
+        LongPathMode=(isLong or #path>=Cfg.LONGPATH_WP_THRESH)
+        LongPathDistPrev=straightDist
+    else
+        PathFollowing.active=false
+        LongPathMode=false
+    end
 end
 
 -- =============================================================
@@ -1679,14 +1736,15 @@ local function ClosestNoTool()
     local best,bestScore=nil,-math.huge
     for _,p in ipairs(Players:GetPlayers()) do
         if p~=LocalPlayer and Alive(p) and not HasTool(p) then
-            local pos=GetPos(p); if not pos then continue end
-            local d=(pos-mp).Magnitude
-            -- Score: prefer close players with low open space (cornered)
-            local openSp=OpenSpace4(pos,8)
-            local cornerBonus=math.clamp((Cfg.CORNER_THRESHOLD-openSp)/Cfg.CORNER_THRESHOLD,0,1)*15
-            local distScore=100-math.clamp(d,0,100)
-            local score=distScore+cornerBonus*Cfg.AGGR_CORNER_WEIGHT
-            if score>bestScore then bestScore=score; best=p end
+            local pos=GetPos(p)
+            if pos then
+                local d=(pos-mp).Magnitude
+                local openSp=OpenSpace4(pos,8)
+                local cornerBonus=math.clamp((Cfg.CORNER_THRESHOLD-openSp)/Cfg.CORNER_THRESHOLD,0,1)*15
+                local distScore=100-math.clamp(d,0,100)
+                local score=distScore+cornerBonus*Cfg.AGGR_CORNER_WEIGHT
+                if score>bestScore then bestScore=score; best=p end
+            end
         end
     end
     return best
@@ -1715,7 +1773,7 @@ local function MCEvalDumpTarget(myPos, candidate)
     for _=1,N do
         local states={}
         for _,p in ipairs(Players:GetPlayers()) do
-            if not Alive(p) then continue end
+            if Alive(p) then
             local pos=GetPos(p) or myPos; local vel=Flat(GetVel(p))
             local futurePos=pos+vel*timeToTag
             states[p.Name]={
@@ -1724,6 +1782,7 @@ local function MCEvalDumpTarget(myPos, candidate)
                 openSp=OpenSpace4(pos,8), aggr=GetMem(p).psych.aggression,
                 wallAff=GetMem(p).psych.wallAffinity, isMe=(p==LocalPlayer),
             }
+            end -- Alive(p)
         end
         local myFuturePos=myPos+SafeN(Flat(candPos-myPos))*(timeToTag*mySpeed*0.75)
         if states[LocalPlayer.Name] then
@@ -1737,10 +1796,11 @@ local function MCEvalDumpTarget(myPos, candidate)
             if not holderName then break end
             local bestTarget,bestDist=nil,math.huge
             for name,s in pairs(states) do
-                if s.hasTool then continue end
-                local d=(s.pos-holderState.pos).Magnitude
-                local penalty=s.isMe and 1.8 or 1.0
-                if d*penalty<bestDist then bestDist=d*penalty;bestTarget=name end
+                if not s.hasTool then
+                    local d=(s.pos-holderState.pos).Magnitude
+                    local penalty=s.isMe and 1.8 or 1.0
+                    if d*penalty<bestDist then bestDist=d*penalty;bestTarget=name end
+                end
             end
             for name,s in pairs(states) do
                 if s.hasTool then
@@ -1756,9 +1816,10 @@ local function MCEvalDumpTarget(myPos, candidate)
                 end
             end
             for name,s in pairs(states) do
-                if s.hasTool then continue end
-                if (s.pos-holderState.pos).Magnitude<hitR then
-                    holderState.hasTool=false; s.hasTool=true; break
+                if not s.hasTool then
+                    if (s.pos-holderState.pos).Magnitude<hitR then
+                        holderState.hasTool=false; s.hasTool=true; break
+                    end
                 end
             end
         end
@@ -2041,7 +2102,7 @@ local function ScoreAndSelectJuke(enemy,myPos,enemyPos,dist)
             local exitProbe=myPos+exitD*6
             local exitOpenBonus=OpenSpace4(exitProbe,6)*0.038
             local exitBlocked=HBCast(myPos,SafeN(Flat(exitD)),Cfg.WALL_HARD_DIST*2.0)
-            if exitBlocked then continue end
+            if not exitBlocked then
             local momentumPerpBonus=0
             if chaserMomentum>5 then
                 local perpToChaser=math.abs(exitD:Dot(Vector3.new(-chaserVel.Z,0,chaserVel.X)))
@@ -2057,6 +2118,7 @@ local function ScoreAndSelectJuke(enemy,myPos,enemyPos,dist)
                        +(PathClear(myPos,exitD,Cfg.LOOKAHEAD_TIME) and 0 or -0.35)
                        -HeatAt(enemy.Name,myPos+exitD*8)*0.02
             if score>bestScore then bestScore=score;bestName=jt end
+            end -- not exitBlocked
         end
     end
     return bestName or "ankleBreaker",bestScore
@@ -2238,14 +2300,32 @@ local function DoChase(myPos, target, dt)
     local rp = MakeRP()
     local losResult = Workspace:Raycast(myPos, toTarget*dist, rp)
     local hasLOS    = (not losResult) or IsTraversable(losResult)
-    local needPath  = not hasLOS or dist > Cfg.LOS_TRIGGER_DIST
+    -- Long path auto-detect: no LOS, or far target, or currently in long-path mode
+    local needPath  = not hasLOS or dist > Cfg.LOS_TRIGGER_DIST or LongPathMode
 
     if needPath then
+        -- Use shorter replan interval when on a complex path so we adapt quickly
+        local replanInterval = LongPathMode and Cfg.LONGPATH_REPLAN or Cfg.PATH_REPLAN_INTERVAL
         local shouldReplan = not PathFollowing.active
             or PathFollowing.targetPlayer ~= target
-            or (os.clock() - PathFollowing.lastReplan) > Cfg.PATH_REPLAN_INTERVAL
+            or (os.clock() - PathFollowing.lastReplan) > replanInterval
         if shouldReplan then RequestPathTo(target) end
-        if PathFollowing.active then if UpdatePathFollowing(myPos, dt) then return end end
+        if PathFollowing.active then
+            -- Track progress: if we haven't gotten closer in 1.5s on long path, force replan
+            if LongPathMode then
+                LongPathTimer = LongPathTimer + dt
+                if LongPathTimer > 1.5 then
+                    LongPathTimer = 0
+                    local curDist = (tp - myPos).Magnitude
+                    if curDist >= LongPathDistPrev - 1.0 then
+                        -- No progress — replan immediately
+                        RequestPathTo(target)
+                    end
+                    LongPathDistPrev = curDist
+                end
+            end
+            if UpdatePathFollowing(myPos, dt) then return end
+        end
         if not PathFollowing.active then
             local fallback = FindOpenCorridor(myPos, toTarget)
             MoveDir = LerpV(MoveDir, fallback, Cfg.CHASE_MOVE_LERP)
@@ -2254,6 +2334,9 @@ local function DoChase(myPos, target, dt)
         return
     end
 
+    -- Reached target or has LOS and close enough — exit long path mode
+    LongPathMode  = false
+    LongPathTimer = 0
     PathFollowing.active = false
 
     -- ── 2. Determine chase mode based on bomb timer ──────────────
@@ -2373,12 +2456,13 @@ local function DoEvade(myPos, enemy, dt)
         local bestDir=awayFromCarrier; local bestScore=-math.huge; local rp=MakeRP()
         for i=0,15 do
             local a=(i/16)*math.pi*2; local d=Vector3.new(math.cos(a),0,math.sin(a))
-            if HBCast(myPos,d,Cfg.WALL_HARD_DIST) then continue end
-            local awayScore=d:Dot(awayFromCarrier)*2.5
-            local openBonus=OpenSpace4(myPos+d*5,6)*0.08
-            local heatPenalty=HeatAt(enemy.Name,myPos+d*4)*0.03
-            local score=awayScore+openBonus-heatPenalty
-            if score>bestScore then bestScore=score;bestDir=d end
+            if not HBCast(myPos,d,Cfg.WALL_HARD_DIST) then
+                local awayScore=d:Dot(awayFromCarrier)*2.5
+                local openBonus=OpenSpace4(myPos+d*5,6)*0.08
+                local heatPenalty=HeatAt(enemy.Name,myPos+d*4)*0.03
+                local score=awayScore+openBonus-heatPenalty
+                if score>bestScore then bestScore=score;bestDir=d end
+            end
         end
         local escDir=SafeDir(myPos,bestDir,Cfg.WALL_REPULSE_WEIGHT)
         MoveDir=LerpV(MoveDir,escDir,0.85)   -- very fast response
@@ -2403,18 +2487,19 @@ local function DoEvade(myPos, enemy, dt)
             local bestDir=awayFromCarrier; local bestScore=-math.huge; local rp=MakeRP()
             for i=0,15 do
                 local a=(i/16)*math.pi*2; local d=Vector3.new(math.cos(a),0,math.sin(a))
-                if HBCast(myPos,d,Cfg.WALL_HARD_DIST) then continue end
-                local awayScore=d:Dot(awayFromCarrier)
-                local wClear=0
-                for j=0,3 do
-                    local wa=(j/4)*math.pi*2; local wd=Vector3.new(math.cos(wa),0,math.sin(wa))
-                    local wr=Workspace:Raycast(myPos+d*3,wd*Cfg.WALL_NEAR_DIST,rp)
-                    wClear+=(wr and not IsTraversable(wr)) and (wr.Position-(myPos+d*3)).Magnitude or Cfg.WALL_NEAR_DIST
+                if not HBCast(myPos,d,Cfg.WALL_HARD_DIST) then
+                    local awayScore=d:Dot(awayFromCarrier)
+                    local wClear=0
+                    for j=0,3 do
+                        local wa=(j/4)*math.pi*2; local wd=Vector3.new(math.cos(wa),0,math.sin(wa))
+                        local wr=Workspace:Raycast(myPos+d*3,wd*Cfg.WALL_NEAR_DIST,rp)
+                        wClear=wClear+((wr and not IsTraversable(wr)) and (wr.Position-(myPos+d*3)).Magnitude or Cfg.WALL_NEAR_DIST)
+                    end
+                    wClear=wClear/4
+                    local openBonus=OpenSpace4(myPos+d*5,6)*0.06
+                    local score=awayScore*2.0+wClear*0.3+openBonus
+                    if score>bestScore then bestScore=score;bestDir=d end
                 end
-                wClear=wClear/4
-                local openBonus=OpenSpace4(myPos+d*5,6)*0.06
-                local score=awayScore*2.0+wClear*0.3+openBonus
-                if score>bestScore then bestScore=score;bestDir=d end
             end
             local escDir=SafeDir(myPos,bestDir,Cfg.WALL_REPULSE_WEIGHT)
             MoveDir=LerpV(MoveDir,escDir,Cfg.MOVE_LERP); FaceDir=escDir; return
@@ -2534,14 +2619,19 @@ end
 -- =============================================================
 -- VELOCITY STABILIZATION
 -- =============================================================
+local function GetHRPVel(hrp)
+    local ok,v=pcall(function() return hrp.AssemblyLinearVelocity end)
+    if ok and v then return v end
+    local ok2,v2=pcall(function() return hrp.Velocity end)
+    return (ok2 and v2) or Vector3.zero
+end
+local function SetHRPVel(hrp,v)
+    pcall(function() hrp.AssemblyLinearVelocity=v end)
+end
 local function StabilizeVelocity(hrp)
-    local vel=hrp.AssemblyLinearVelocity
+    local vel=GetHRPVel(hrp)
     if vel.Magnitude>Cfg.MAX_SPEED+1 then
-        hrp.AssemblyLinearVelocity=vel.Unit*Cfg.MAX_SPEED; vel=hrp.AssemblyLinearVelocity
-    end
-    local vx=Clamp0(vel.X); local vz=Clamp0(vel.Z)
-    if vx~=vel.X or vz~=vel.Z then
-        hrp.AssemblyLinearVelocity=Vector3.new(vx,vel.Y,vz)
+        SetHRPVel(hrp, vel.Unit*Cfg.MAX_SPEED)
     end
 end
 
@@ -2549,9 +2639,9 @@ end
 -- PRECISE POSITION TRACKING
 -- =============================================================
 local function UpdatePrecisePos(hrp, dt)
-    if not PrecisePosInitialized then PrecisePos=hrp.Position; PrecisePosInitialized=true; return end
-    local vel=Flat(hrp.AssemblyLinearVelocity); PrecisePos=PrecisePos+vel*dt
     local real=hrp.Position
+    if not PrecisePosInitialized then PrecisePos=real; PrecisePosInitialized=true; return end
+    local vel=Flat(GetHRPVel(hrp)); PrecisePos=PrecisePos+vel*dt
     if (Vector3.new(PrecisePos.X,real.Y,PrecisePos.Z)-real).Magnitude>Cfg.DRIFT_THRESHOLD then PrecisePos=real end
 end
 
@@ -2917,6 +3007,9 @@ RunService.Heartbeat:Connect(function(dt)
                 local cornered = tOpenSp < Cfg.CORNER_THRESHOLD
                 AggLbl.Text=cornered and string.format("🎯 CORNERED (%.1f)",dist) or string.format("🔪 HUNTING (%.1f)",dist)
                 AggLbl.TextColor3=cornered and Color3.fromRGB(255,50,50) or Color3.fromRGB(255,130,50)
+            elseif LongPathMode then
+                AggLbl.Text=string.format("🗺 LONG PATH (%d wp)", #PathFollowing.waypoints)
+                AggLbl.TextColor3=Color3.fromRGB(80,160,255)
             end
         else
             if BAPSecondsUntilTag < Cfg.BAP_PANIC_THRESHOLD then
@@ -3019,6 +3112,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     _openSpaceDirTimer=0; _cornerScoreTimer=0
     BAPHistory={}; BAPSecondsUntilTag=math.huge; BAPFrameCounter=0
     _decSnap=nil; _decSnapTime=0
+    LongPathMode=false; LongPathTimer=0; LongPathDistPrev=0
     -- Don't reset NNs – keep learned knowledge across respawns!
     StopJuke(); UpdateTarget(); releaseAll()
     task.defer(_RefreshHBHW)

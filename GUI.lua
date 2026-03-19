@@ -47,7 +47,7 @@ local function releaseAll()
 end
 local function doJump()
     sk(true, KC.Space)
-    task.delay(0.08, function() sk(false, KC.Space) end)
+    delay(0.08, function() sk(false, KC.Space) end)
 end
 local function moveDir(dir)
     if not dir or dir.Magnitude < 0.01 then releaseAll(); return end
@@ -344,14 +344,14 @@ local LastPosition          = nil
 local StuckTimer            = 0
 local JukeCooldown          = 0
 local JukeStartDist         = 0
-local AntiStuckDir          = Vector3.zero
+local AntiStuckDir          = Vector3.new(0,0,0)
 local AntiStuckTimer        = 0
-local MoveDir               = Vector3.zero
-local FaceDir               = Vector3.zero
+local MoveDir               = Vector3.new(0,0,0)
+local FaceDir               = Vector3.new(0,0,0)
 local CurrentRotAngle       = 0
-local SmoothedRep           = Vector3.zero
+local SmoothedRep           = Vector3.new(0,0,0)
 local LastOpenSpace         = 8
-local PrecisePos            = Vector3.zero
+local PrecisePos            = Vector3.new(0,0,0)
 local PrecisePosInitialized = false
 local RRTCooldown           = 0
 local RRTCachedDir          = nil
@@ -371,9 +371,9 @@ local LongPathMode   = false    -- true when AI is navigating a complex/long rou
 local LongPathTimer  = 0        -- how long we've been on a long path
 local LongPathDistPrev = 0      -- previous dist to target for progress check
 local JukeState     = { active=false, jukeType=nil, phase=0, timer=0, phases=nil,
-                        lockedMove=Vector3.zero, lockedFace=Vector3.zero }
+                        lockedMove=Vector3.new(0,0,0), lockedFace=Vector3.new(0,0,0) }
 local BaitState     = { active=false, phase="display", timer=0,
-                        fakeDir=Vector3.zero, escapeDir=Vector3.zero, cooldown=0 }
+                        fakeDir=Vector3.new(0,0,0), escapeDir=Vector3.new(0,0,0), cooldown=0 }
 
 local loopTimer=0; local targetTimer=0; local heatmapTimer=0; local planTimer=0
 
@@ -427,11 +427,11 @@ local function dLeakyReLU(x) return x>0 and 1 or 0.1 end
 local function GetRoot(p) local c=p.Character; return c and c:FindFirstChild("HumanoidRootPart") or nil end
 local function GetPos(p)  local r=GetRoot(p);  return r and r.Position or nil end
 local function GetVel(p)
-    local r=GetRoot(p); if not r then return Vector3.zero end
+    local r=GetRoot(p); if not r then return Vector3.new(0,0,0) end
     local ok,v=pcall(function() return r.AssemblyLinearVelocity end)
     if ok and v then return v end
     local ok2,v2=pcall(function() return r.Velocity end)
-    return (ok2 and v2) or Vector3.zero
+    return (ok2 and v2) or Vector3.new(0,0,0)
 end
 local function Alive(p)
     local c=p.Character; if not c then return false end
@@ -464,7 +464,7 @@ local function _RefreshHBHW()
     _CachedHBHW = Cfg.HBW_DEFAULT
 end
 LocalPlayer.CharacterAdded:Connect(function()
-    _CachedHBHW = Cfg.HBW_DEFAULT; task.defer(_RefreshHBHW)
+    _CachedHBHW = Cfg.HBW_DEFAULT; spawn(_RefreshHBHW)
 end)
 local function GetHBHW() return _CachedHBHW end
 
@@ -576,7 +576,7 @@ end
 -- WALL REPULSION
 -- =============================================================
 local function WallRepulsionRaw(origin)
-    local rep=Vector3.zero; local rp=MakeRP(); local maxD=Cfg.WALL_NEAR_DIST
+    local rep=Vector3.new(0,0,0); local rp=MakeRP(); local maxD=Cfg.WALL_NEAR_DIST
     for i=0,Cfg.WALL_REPULSE_RAYS-1 do
         local a=(i/Cfg.WALL_REPULSE_RAYS)*math.pi*2
         local dir=Vector3.new(math.cos(a),0,math.sin(a))
@@ -673,7 +673,7 @@ local function FindOpenCorridor(origin, preferredDir)
         local a=(i/Cfg.CORRIDOR_RAYS)*math.pi*2
         local dir=Vector3.new(math.cos(a),0,math.sin(a))
         local perp=Vector3.new(-dir.Z,0,dir.X); local minDist=probeD
-        for _,off in ipairs({Vector3.zero,perp*hw*0.9,-perp*hw*0.9,perp*hw*0.45,-perp*hw*0.45}) do
+        for _,off in ipairs({Vector3.new(0,0,0),perp*hw*0.9,-perp*hw*0.9,perp*hw*0.45,-perp*hw*0.45}) do
             local hit=Workspace:Raycast(origin+off,dir*probeD,rp)
             if hit and not IsTraversable(hit) then
                 local d=(hit.Position-(origin+off)).Magnitude
@@ -1041,7 +1041,7 @@ end
 -- Build decision NN input vector (40 features)
 local function BuildDecisionInput(myPos, target)
     local tpos   = target and GetPos(target) or myPos
-    local tvel   = target and Flat(GetVel(target)) or Vector3.zero
+    local tvel   = target and Flat(GetVel(target)) or Vector3.new(0,0,0)
     local myvel  = Flat(GetVel(LocalPlayer))
     local dist   = (tpos - myPos).Magnitude
     local relX   = math.clamp((tpos.X-myPos.X)/100,-1,1)
@@ -1308,7 +1308,7 @@ local function GetPanicMdl(p)
     local k=p.Name
     if not PanicModel[k] then
         local buckets={}; for i=0,15 do buckets[i]={samples=0,panicSum=0} end
-        PanicModel[k]={bombTimeBuckets=buckets,dirChangeRate=0,speedVariance=0,lastSpeed=0,lastDir=Vector3.zero,currentPanic=0}
+        PanicModel[k]={bombTimeBuckets=buckets,dirChangeRate=0,speedVariance=0,lastSpeed=0,lastDir=Vector3.new(0,0,0),currentPanic=0}
     end
     return PanicModel[k]
 end
@@ -1572,7 +1572,7 @@ local function pathFreeWide(from, to, rp)
     local hw=GetHBHW(); local dir=to-from; local dist=dir.Magnitude
     if dist<0.05 then return true end
     local d=dir.Unit; local perp=Vector3.new(-d.Z,0,d.X)
-    for _,off in ipairs({Vector3.zero,perp*hw,-perp*hw}) do
+    for _,off in ipairs({Vector3.new(0,0,0),perp*hw,-perp*hw}) do
         local res=Workspace:Raycast(from+off,d*dist,rp)
         if res and not IsTraversable(res) then return false end
     end
@@ -1920,7 +1920,7 @@ local function BuildPhases(jukeName,myPos,enemyPos,enemy)
         return {{m=BakeDir(myPos,runD,0.25),f=runD,dur=0.36},
                 {m=BakeDir(myPos,SafeN(wNorm+away*0.70)),f=away,dur=0.58}}
     elseif jukeName=="stallJuke" then
-        return {{m=SafeN(toE*0.20),f=toE,dur=0.13},{m=Vector3.zero,f=away,dur=0.08},
+        return {{m=SafeN(toE*0.20),f=toE,dur=0.13},{m=Vector3.new(0,0,0),f=away,dur=0.08},
                 {m=BakeDir(myPos,SafeN(away+perp*0.65)),f=away,dur=0.60}}
     elseif jukeName=="doubleCut" then
         return {{m=BakeDir(myPos,perp,0.30),f=perp,dur=0.20},{m=BakeDir(myPos,opp,0.30),f=opp,dur=0.20},
@@ -1971,7 +1971,7 @@ local function BuildPhases(jukeName,myPos,enemyPos,enemy)
                     {m=osc2,f=osc2,dur=0.10},{m=osc1,f=osc1,dur=0.10},{m=escape,f=escape,dur=0.50}}
         end
     elseif jukeName=="insideCut" then
-        local eVel=SafeN(Flat(GetVel(enemy) or Vector3.zero))
+        local eVel=SafeN(Flat(GetVel(enemy) or Vector3.new(0,0,0)))
         local chaserRight=Vector3.new(-eVel.Z,0,eVel.X)
         local insideDir=chaserRight:Dot(p1)>0 and p1 or p2
         return {{m=BakeDir(myPos,SafeN(toE*0.50+insideDir*0.85),0.15),f=toE,dur=0.25},
@@ -2166,7 +2166,7 @@ local function DoDumpChase(myPos, dt)
     if DumpLockTimer<=0 or not DumpTarget or not Alive(DumpTarget) then
         DumpTarget=FindOptimalDumpTarget(myPos); DumpLockTimer=0.50
     end
-    if not DumpTarget then MoveDir=Vector3.zero; FaceDir=Vector3.zero; return end
+    if not DumpTarget then MoveDir=Vector3.new(0,0,0); FaceDir=Vector3.new(0,0,0); return end
     local tp=GetPos(DumpTarget); if not tp then return end
     local tVel=Flat(GetVel(DumpTarget))
     local aimPos=tp+tVel*(GetPing()*2.0)
@@ -2254,7 +2254,7 @@ end
 
 -- Aggressive wall herd: find which wall direction forces target into a dead-end
 local function ComputeHerdDir(myPos, tp, toTarget, rp2)
-    local herdBias = Vector3.zero
+    local herdBias = Vector3.new(0,0,0)
     local bestWS   = 0
     local nRays    = OptimizedMode and 8 or Cfg.AGGR_HERD_RAYS
     for i = 0, nRays-1 do
@@ -2280,7 +2280,7 @@ local function ComputeHerdDir(myPos, tp, toTarget, rp2)
 end
 
 local function DoChase(myPos, target, dt)
-    if not target then MoveDir=Vector3.zero; FaceDir=Vector3.zero; return end
+    if not target then MoveDir=Vector3.new(0,0,0); FaceDir=Vector3.new(0,0,0); return end
     local tp   = GetPos(target); if not tp then return end
     local tVel = Flat(GetVel(target))
     local dist = (tp - myPos).Magnitude
@@ -2436,7 +2436,7 @@ end
 -- EVADE (NN + BAP enhanced)
 -- =============================================================
 local function DoEvade(myPos, enemy, dt)
-    if not enemy then MoveDir=Vector3.zero; FaceDir=Vector3.zero; return end
+    if not enemy then MoveDir=Vector3.new(0,0,0); FaceDir=Vector3.new(0,0,0); return end
     local ep=GetPos(enemy); if not ep then return end
     local pingComp=GetPing()*2.0
     local enemyVel=Flat(GetVel(enemy))
@@ -2623,7 +2623,7 @@ local function GetHRPVel(hrp)
     local ok,v=pcall(function() return hrp.AssemblyLinearVelocity end)
     if ok and v then return v end
     local ok2,v2=pcall(function() return hrp.Velocity end)
-    return (ok2 and v2) or Vector3.zero
+    return (ok2 and v2) or Vector3.new(0,0,0)
 end
 local function SetHRPVel(hrp,v)
     pcall(function() hrp.AssemblyLinearVelocity=v end)
@@ -2734,7 +2734,7 @@ local function BuildGUI()
             aiBtn.Text="OFF"; aiBtn.BackgroundColor3=Color3.fromRGB(28,28,40)
             sLbl.Text="● AI OFF"; sLbl.TextColor3=Color3.fromRGB(210,50,50)
             SetAutoRotate(true); releaseAll(); StopJuke()
-            BaitState.active=false; RRTCachedDir=nil; MoveDir=Vector3.zero; FaceDir=Vector3.zero
+            BaitState.active=false; RRTCachedDir=nil; MoveDir=Vector3.new(0,0,0); FaceDir=Vector3.new(0,0,0)
         end
     end)
     jumpBtn.MouseButton1Click:Connect(function()
@@ -2787,7 +2787,7 @@ Instance.new("UICorner",jmpBtn).CornerRadius=UDim.new(1,0)
 jmpBtn.InputBegan:Connect(function(inp)
     if inp.UserInputType==Enum.UserInputType.Touch then
         doJump(); jmpBtn.BackgroundColor3=Color3.fromRGB(255,220,80)
-        task.delay(0.12,function() jmpBtn.BackgroundColor3=Color3.fromRGB(255,170,20) end)
+        delay(0.12,function() jmpBtn.BackgroundColor3=Color3.fromRGB(255,170,20) end)
     end
 end)
 local maxJR=jR-tR; local activeInp=nil
@@ -3099,8 +3099,8 @@ end)
 LocalPlayer.CharacterAdded:Connect(function()
     LastPosition=nil; StuckTimer=0; AntiStuckTimer=0
     JukeCooldown=0; JukeStartDist=0; JumpCooldown=0
-    MoveDir=Vector3.zero; FaceDir=Vector3.zero
-    CurrentRotAngle=0; SmoothedRep=Vector3.zero
+    MoveDir=Vector3.new(0,0,0); FaceDir=Vector3.new(0,0,0)
+    CurrentRotAngle=0; SmoothedRep=Vector3.new(0,0,0)
     BaitState.active=false; BaitState.cooldown=0
     RRTCachedDir=nil; RRTCooldown=0
     LastOpenSpace=8; PrecisePosInitialized=false
@@ -3115,6 +3115,6 @@ LocalPlayer.CharacterAdded:Connect(function()
     LongPathMode=false; LongPathTimer=0; LongPathDistPrev=0
     -- Don't reset NNs – keep learned knowledge across respawns!
     StopJuke(); UpdateTarget(); releaseAll()
-    task.defer(_RefreshHBHW)
-    if AutoPlayerEnabled then task.wait(0.1); SetAutoRotate(false) end
+    spawn(_RefreshHBHW)
+    if AutoPlayerEnabled then wait(0.1); SetAutoRotate(false) end
 end)

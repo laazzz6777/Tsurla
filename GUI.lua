@@ -307,7 +307,7 @@ local function GetDriftPingEstimate()
     table.sort(s); return s[math.floor(#s/2)]
 end
 local function UpdatePing(dt)
-    PingTimer+=dt; if PingTimer<Cfg.PING_UPDATE_RATE then return end; PingTimer=0
+    PingTimer = PingTimer + dt; if PingTimer<Cfg.PING_UPDATE_RATE then return end; PingTimer=0
     local sample=SamplePingFromAPI() or GetDriftPingEstimate(); if not sample then return end
     sample=math.clamp(sample,Cfg.PING_MIN,Cfg.PING_MAX); PingRaw=sample
     if not PingInitialized then PingSeconds=sample; PingInitialized=true
@@ -521,8 +521,8 @@ local function ApplyRotation(facingDir, instant, dt)
         CurrentRotAngle=target
     else
         local diff=target-CurrentRotAngle
-        while diff> math.pi do diff-=math.pi*2 end
-        while diff<-math.pi do diff+=math.pi*2 end
+        while diff> math.pi do diff = diff - math.pi*2 end
+        while diff<-math.pi do diff = diff + math.pi*2 end
         local alpha=math.min(Cfg.ROT_SMOOTH_SPEED*(dt or 1/30),1)
         CurrentRotAngle=CurrentRotAngle+diff*alpha
     end
@@ -583,7 +583,7 @@ local function WallRepulsionRaw(origin)
         local res=Workspace:Raycast(origin,dir*maxD,rp)
         if res and not IsTraversable(res) then
             local d=math.max(0.1,(res.Position-origin).Magnitude)
-            rep+=SafeN(Flat(origin-res.Position))*((maxD-d)/maxD)^2
+            rep = rep + SafeN(Flat(origin-res.Position))*((maxD-d)/maxD)^2
         end
     end
     return rep
@@ -603,7 +603,7 @@ local function OpenSpace4(pos, radius)
         local a=(i/4)*math.pi*2
         local dir=Vector3.new(math.cos(a),0,math.sin(a))
         local res=Workspace:Raycast(pos,dir*radius,rp)
-        total+=(res and not IsTraversable(res)) and (res.Position-pos).Magnitude or radius
+        total = total + (res and not IsTraversable(res)) and (res.Position-pos).Magnitude or radius
     end
     return total/4
 end
@@ -613,7 +613,7 @@ local function OpenSpace(origin,radius)
     for i=0,rays-1 do
         local a=(i/rays)*math.pi*2; local dir=Vector3.new(math.cos(a),0,math.sin(a))
         local res=Workspace:Raycast(origin,dir*radius,rp)
-        total+=(res and not IsTraversable(res)) and (res.Position-origin).Magnitude or radius
+        total = total + (res and not IsTraversable(res)) and (res.Position-origin).Magnitude or radius
     end
     return total/rays
 end
@@ -844,7 +844,7 @@ function DeepNN:forward(input)
             local s   = bl[i]
             local Wi  = Wl[i]
             for j = 1, #inAct do
-                s += Wi[j] * inAct[j]
+                s = s + Wi[j] * inAct[j]
             end
             pre[i] = s
             out[i] = isLast and s or LeakyReLU(s)   -- linear output, leaky hidden
@@ -879,7 +879,7 @@ function DeepNN:backward(target, acts, pres)
         for j = 1, sz_l do
             local err = 0
             for i = 1, sz_l1 do
-                err += Wl1[i][j] * dNext[i]
+                err = err + Wl1[i][j] * dNext[i]
             end
             dCur[j] = err * dLeakyReLU(preL[j])
         end
@@ -887,7 +887,7 @@ function DeepNN:backward(target, acts, pres)
     end
 
     -- Adam weight + bias updates
-    self.t += 1
+    self.t = self.t + 1
     local t   = self.t
     local b1  = self.beta1;  local b2  = self.beta2
     local eps = self.eps;    local lr  = self.lr
@@ -912,7 +912,7 @@ function DeepNN:backward(target, acts, pres)
             local gb      = di
             mbl[i]        = b1*mbl[i] + (1-b1)*gb
             vbl[i]        = b2*vbl[i] + (1-b2)*gb*gb
-            bl[i]        -= lr * (mbl[i]/bc1) / (math.sqrt(vbl[i]/bc2) + eps)
+            bl[i] = bl[i] - lr * (mbl[i]/bc1) / (math.sqrt(vbl[i]/bc2) + eps)
             -- Weights
             local Wi      = Wl[i]
             local mWi     = mWl[i]
@@ -921,7 +921,7 @@ function DeepNN:backward(target, acts, pres)
                 local gw  = di * inAct[j]
                 mWi[j]    = b1*mWi[j] + (1-b1)*gw
                 vWi[j]    = b2*vWi[j] + (1-b2)*gw*gw
-                Wi[j]    -= lr * (mWi[j]/bc1) / (math.sqrt(vWi[j]/bc2) + eps)
+                Wi[j] = Wi[j] - lr * (mWi[j]/bc1) / (math.sqrt(vWi[j]/bc2) + eps)
             end
         end
     end
@@ -951,7 +951,7 @@ end
 
 -- Tick: increment frame counter, run batch every N frames
 function DeepNN:tick()
-    self.framesSinceUpdate += 1
+    self.framesSinceUpdate = self.framesSinceUpdate + 1
     if self.framesSinceUpdate >= Cfg.NN_UPDATE_EVERY then
         self.framesSinceUpdate = 0
         self:learnBatch()
@@ -1010,7 +1010,7 @@ local function BuildOppInput(p, myPos)
     local cs    = math.clamp((ps.avgClosingSpeed or 8)/20, 0, 1)
     local btime = math.clamp(bombTimeLeft/15, 0, 1)
     local htool = HasTool(p) and 1 or 0
-    local alive = 0; for _,pl in ipairs(Players:GetPlayers()) do if Alive(pl) then alive+=1 end end
+    local alive = 0; for _,pl in ipairs(Players:GetPlayers()) do if Alive(pl) then alive = alive + 1 end end
     local nalive= math.clamp(alive/8, 0, 1)
     local ping  = math.clamp(GetPing()/0.3, 0, 1)
     local myX, myZ = NormalizePos(myPos)
@@ -1054,10 +1054,10 @@ local function BuildDecisionInput(myPos, target)
     local bap    = math.clamp(BAPSecondsUntilTag/10,0,1)
     local threats= 0
     for _,p in ipairs(Players:GetPlayers()) do
-        if p~=LocalPlayer and Alive(p) and HasTool(p) then threats+=1 end
+        if p~=LocalPlayer and Alive(p) and HasTool(p) then threats = threats + 1 end
     end
     local nthreats = math.clamp(threats/4,0,1)
-    local alive = 0; for _,pl in ipairs(Players:GetPlayers()) do if Alive(pl) then alive+=1 end end
+    local alive = 0; for _,pl in ipairs(Players:GetPlayers()) do if Alive(pl) then alive = alive + 1 end end
     return {
         math.clamp(myvel.X/20,-1,1), math.clamp(myvel.Z/20,-1,1),  -- 1-2
         relX, relZ,                   -- 3-4
@@ -1175,12 +1175,12 @@ local function GetMem(p)
     end
     return PlayerMemory[k]
 end
-local function RecordSuccess(p,jt) if p and jt then local m=GetMem(p); if m.jukes[jt] then m.jukes[jt].s+=1 end end end
-local function RecordFail(p,jt)    if p and jt then local m=GetMem(p); if m.jukes[jt] then m.jukes[jt].f+=1 end end end
+local function RecordSuccess(p,jt) if p and jt then local m=GetMem(p); if m.jukes[jt] then m.jukes[jt].s = m.jukes[jt].s + 1 end end end
+local function RecordFail(p,jt)    if p and jt then local m=GetMem(p); if m.jukes[jt] then m.jukes[jt].f = m.jukes[jt].f + 1 end end end
 local function AddRTSample(p,t)
     local m=GetMem(p); table.insert(m.reactionSamples,t)
     if #m.reactionSamples>12 then table.remove(m.reactionSamples,1) end
-    local sum=0; for _,v in ipairs(m.reactionSamples) do sum+=v end
+    local sum=0; for _,v in ipairs(m.reactionSamples) do sum = sum + v end
     m.reactionTime=sum/#m.reactionSamples
 end
 local function UpdatePsych(p,myPos)
@@ -1192,12 +1192,12 @@ local function UpdatePsych(p,myPos)
         local res=Workspace:Raycast(pos,Vector3.new(math.cos(a),0,math.sin(a))*Cfg.PSYCH_WALL_RADIUS,rp)
         if res and not IsTraversable(res) then nearWall=true; break end
     end
-    ps.wallSamples+=1; if nearWall then ps.wallHugCount+=1 end
+    ps.wallSamples = ps.wallSamples + 1; if nearWall then ps.wallHugCount = ps.wallHugCount + 1 end
     ps.wallAffinity=ps.wallHugCount/ps.wallSamples
     local vel=Flat(GetVel(p))
     if vel.Magnitude>1 then
-        local dir=SafeN(vel); ps.totalDirSamples+=1
-        if ps.lastDir and (dir-ps.lastDir).Magnitude>Cfg.PSYCH_DIR_THRESHOLD*2 then ps.dirChanges+=1 end
+        local dir=SafeN(vel); ps.totalDirSamples = ps.totalDirSamples + 1
+        if ps.lastDir and (dir-ps.lastDir).Magnitude>Cfg.PSYCH_DIR_THRESHOLD*2 then ps.dirChanges = ps.dirChanges + 1 end
         ps.lastDir=dir
         ps.unpredictable=ps.totalDirSamples>0 and math.min(ps.dirChanges/ps.totalDirSamples,1.0) or 0.3
     end
@@ -1206,7 +1206,7 @@ local function UpdatePsych(p,myPos)
         if closing>0 then
             table.insert(ps.closingSamples,closing)
             if #ps.closingSamples>12 then table.remove(ps.closingSamples,1) end
-            local sum=0; for _,v in ipairs(ps.closingSamples) do sum+=v end
+            local sum=0; for _,v in ipairs(ps.closingSamples) do sum = sum + v end
             ps.avgClosingSpeed=sum/#ps.closingSamples
             ps.aggression=math.min(ps.avgClosingSpeed/20,1.0)
         end
@@ -1230,12 +1230,12 @@ local function GetNCell(name,cell)
     return NeuralHeatmap[name][cell]
 end
 local function AddHeat(p,pos)
-    if OptimizedMode then return end; GetNCell(p.Name,HeatCell(pos)).weight+=1
+    if OptimizedMode then return end; GetNCell(p.Name,HeatCell(pos)).weight = weight + 1
 end
 local function UpdateNeuralCell(p,pos,vel)
     if OptimizedMode then return end
     local c=GetNCell(p.Name,HeatCell(pos)); local lr=Cfg.NN_LEARN_RATE*10
-    c.velX=c.velX*(1-lr)+vel.X*lr; c.velZ=c.velZ*(1-lr)+vel.Z*lr; c.weight+=1
+    c.velX=c.velX*(1-lr)+vel.X*lr; c.velZ=c.velZ*(1-lr)+vel.Z*lr; c.weight = c.weight + 1
 end
 local function UpdateNeuralTransition(p,prevPos,curPos)
     if OptimizedMode or not prevPos then return end
@@ -1324,7 +1324,7 @@ local function UpdatePanicModel(p,vel)
     m.currentPanic=m.currentPanic*(1-Cfg.PANIC_LEARN_RATE)+rawPanic*Cfg.PANIC_LEARN_RATE
     if bombActive and bombTimeLeft>0 then
         local slot=math.floor(math.clamp(bombTimeLeft,0,14))
-        m.bombTimeBuckets[slot].samples+=1; m.bombTimeBuckets[slot].panicSum+=rawPanic
+        m.bombTimeBuckets[slot].samples = samples + 1; m.bombTimeBuckets[slot].panicSum = panicSum + rawPanic
     end
     m.lastSpeed=speed; m.lastDir=dir
 end
@@ -1419,7 +1419,7 @@ local function UpdateBombArrivalPredictor(myPos)
     if #BAPHistory > 8 then table.remove(BAPHistory, 1) end
     local sum = 0; local cnt = 0
     for _, v in ipairs(BAPHistory) do
-        if v < math.huge then sum += v; cnt += 1 end
+        if v < math.huge then sum = sum +  v; cnt = cnt +  1 end
     end
     BAPSecondsUntilTag = (cnt > 0) and (sum / cnt) or math.huge
     BAPSmoothed        = BAPSecondsUntilTag
@@ -1501,19 +1501,19 @@ local function MonteCarloEscape(myPos,threats,preferredAway)
         for _,t in ipairs(threats) do
             local es=t.isBomber and Cfg.SPEED_WITH_TOOL or Cfg.SPEED_NORMAL
             local tF=t.pos+t.vel*((simTime+pingComp)*Cfg.MC_VEL_DAMP*(es/Cfg.SPEED_NORMAL))
-            local d=(pos-tF).Magnitude; tScore+=d*t.weight
-            if d<(myPos-t.pos).Magnitude-0.5 then closed+=1 end
+            local d=(pos-tF).Magnitude; tScore = tScore + d*t.weight
+            if d<(myPos-t.pos).Magnitude-0.5 then closed = closed + 1 end
         end
         local wClear=0
         for i=0,3 do
             local a=(i/4)*math.pi*2; local wd=Vector3.new(math.cos(a),0,math.sin(a))
             local wr=Workspace:Raycast(pos,wd*Cfg.WALL_NEAR_DIST,rp)
-            wClear+=(wr and not IsTraversable(wr)) and (wr.Position-pos).Magnitude or Cfg.WALL_NEAR_DIST
+            wClear = wClear + ((wr and not IsTraversable(wr)) and (wr.Position-pos).Magnitude or Cfg.WALL_NEAR_DIST)
         end
         wClear=wClear/4
         local osBonus=OpenSpace4(pos,Cfg.OPEN_SEEK_RADIUS)*0.55
         local heatP=0
-        for _,t in ipairs(threats) do if t.isBomber then heatP+=HeatAt(t.playerName,pos)*0.04 end end
+        for _,t in ipairs(threats) do if t.isBomber then heatP = heatP + HeatAt(t.playerName,pos)*0.04 end end
         return tScore*0.8+wClear*0.7+osBonus-closed*2.5-heatP
     end
     local function simPath(startPos,startDir,steps,microDt)
@@ -1655,8 +1655,8 @@ local function RRTStarEscape(myPos,threats,maxNodes,stepSize)
             end
             table.insert(nodes,{pos=newPos,parent=bestParent,cost=bestCost})
             local nodeIdx=#nodes; local score=0
-            for _,t in ipairs(threats) do local d=(newPos-t.pos).Magnitude; score+=d*t.weight end
-            score+=OpenSpace4(newPos,6)*0.4
+            for _,t in ipairs(threats) do local d=(newPos-t.pos).Magnitude; score = score + d*t.weight end
+            score = score + OpenSpace4(newPos,6)*0.4
             if score>bestScore and not HBCast(newPos,dir,Cfg.WALL_HARD_DIST) then bestScore=score;bestNode=nodeIdx end
         end
     end
@@ -1769,7 +1769,7 @@ local function MCEvalDumpTarget(myPos, candidate)
     local timeToTag=math.max(0.05,(candPos-myPos).Magnitude/mySpeed)
     if timeToTag>=bombTimeLeft-0.1 then return 0 end
     local N=Cfg.MC_TRANSFER_SIMS; local safeCount=0
-    local aliveCount=0; for _,p in ipairs(Players:GetPlayers()) do if Alive(p) then aliveCount+=1 end end
+    local aliveCount=0; for _,p in ipairs(Players:GetPlayers()) do if Alive(p) then aliveCount = aliveCount + 1 end end
     for _=1,N do
         local states={}
         for _,p in ipairs(Players:GetPlayers()) do
@@ -1790,7 +1790,7 @@ local function MCEvalDumpTarget(myPos, candidate)
         end
         local simTime=timeToTag; local dt=Cfg.MC_TRANSFER_DT; local hitR=PingAdjustedHitboxR()
         while simTime<Cfg.BOMB_DURATION do
-            simTime+=dt
+            simTime = simTime + dt
             local holderName=nil; local holderState=nil
             for name,s in pairs(states) do if s.hasTool then holderName=name;holderState=s;break end end
             if not holderName then break end
@@ -1824,7 +1824,7 @@ local function MCEvalDumpTarget(myPos, candidate)
             end
         end
         local myState=states[LocalPlayer.Name]
-        if myState and not myState.hasTool then safeCount+=1 end
+        if myState and not myState.hasTool then safeCount = safeCount + 1 end
     end
     return safeCount/N
 end
@@ -1855,18 +1855,18 @@ local function FindOptimalDumpTarget(myPos)
         if candPos then
             local openSp=OpenSpace4(candPos,8)
             local openPenalty=(openSp/Cfg.OPEN_SEEK_RADIUS)*0.08
-            score-=openPenalty
+            score = score - openPenalty
             -- Bonus for candidates who are cornered (harder to escape)
             local cornerBonus=math.clamp((Cfg.CORNER_THRESHOLD-openSp)/Cfg.CORNER_THRESHOLD,0,1)*0.15
-            score+=cornerBonus
+            score = score + cornerBonus
             local nearbyCount=0
             for _,p2 in ipairs(Players:GetPlayers()) do
                 if p2~=candidate and p2~=LocalPlayer and Alive(p2) then
                     local p2pos=GetPos(p2)
-                    if p2pos and (p2pos-candPos).Magnitude<15 then nearbyCount+=1 end
+                    if p2pos and (p2pos-candPos).Magnitude<15 then nearbyCount = nearbyCount + 1 end
                 end
             end
-            score+=nearbyCount*0.04
+            score = score + nearbyCount*0.04
         end
         if score>bestScore then bestScore=score;bestTarget=candidate end
     end
@@ -2022,9 +2022,9 @@ local function TickJuke(dt)
     if not JukeState.active or not JukeState.phases then return false end
     local phases=JukeState.phases; local phase=JukeState.phase
     if phase>#phases then StopJuke(); return false end
-    JukeState.timer+=dt
+    JukeState.timer = JukeState.timer + dt
     if JukeState.timer>=phases[phase].dur then
-        JukeState.timer-=phases[phase].dur; JukeState.phase+=1; phase=JukeState.phase
+        JukeState.timer = JukeState.timer - phases[phase].dur; JukeState.phase = JukeState.phase + 1; phase=JukeState.phase
         if phase>#phases then StopJuke(); return false end
         JukeState.lockedMove=phases[phase].m; JukeState.lockedFace=phases[phase].f
     end
@@ -2128,9 +2128,9 @@ end
 -- BAIT SYSTEM
 -- =============================================================
 local function TickBait(myPos,enemy,dt,mcEscapeDir)
-    if BaitState.cooldown>0 then BaitState.cooldown-=dt end
+    if BaitState.cooldown>0 then BaitState.cooldown = BaitState.cooldown - dt end
     if BaitState.active then
-        BaitState.timer-=dt
+        BaitState.timer = BaitState.timer - dt
         if BaitState.phase=="display" and BaitState.timer<=0 then
             BaitState.phase="snap"; BaitState.timer=0.55
             MoveDir=BaitState.escapeDir; FaceDir=BaitState.escapeDir; return true
@@ -2162,7 +2162,7 @@ end
 -- DUMP CHASE
 -- =============================================================
 local function DoDumpChase(myPos, dt)
-    DumpLockTimer-=dt
+    DumpLockTimer = DumpLockTimer - dt
     if DumpLockTimer<=0 or not DumpTarget or not Alive(DumpTarget) then
         DumpTarget=FindOptimalDumpTarget(myPos); DumpLockTimer=0.50
     end
@@ -2187,7 +2187,7 @@ local function RunStrategicPlanner()
     local myPos=GetPos(LocalPlayer); if not myPos then return end
     local aliveCount=0; local otherAlive={}
     for _,p in ipairs(Players:GetPlayers()) do
-        if Alive(p) then aliveCount+=1; if p~=LocalPlayer then table.insert(otherAlive,p) end end
+        if Alive(p) then aliveCount = aliveCount + 1; if p~=LocalPlayer then table.insert(otherAlive,p) end end
     end
     if not bombActive then
         StrategicGoal.mode=IHaveTool and "chase" or "evade"
@@ -2555,7 +2555,7 @@ local function DoEvade(myPos, enemy, dt)
         MoveDir=LerpV(MoveDir,escDir,Cfg.MOVE_LERP); FaceDir=escDir; return
     end
 
-    RRTCooldown-=dt
+    RRTCooldown = RRTCooldown - dt
     if RRTCooldown<=0 then
         RRTCooldown=Cfg.RRT_INTERVAL
         local rrtDir=RRTStarEscape(myPos,threats,Cfg.RRT_NODES,Cfg.RRT_STEP)
@@ -2868,7 +2868,7 @@ RunService.Heartbeat:Connect(function(dt)
         if bombTimeLeft<0.001 then bombTimeLeft=0 end
     else
         if bombActive then
-            bombGrace+=dt
+            bombGrace = bombGrace + dt
             if bombGrace>=Cfg.BOMB_GRACE then
                 bombActive=false; bombStartTime=0; bombEndTime=0
                 bombTimeLeft=Cfg.BOMB_DURATION; bombHolder="?"; bombGrace=0
@@ -2892,7 +2892,7 @@ RunService.Heartbeat:Connect(function(dt)
     end
 
     -- Heatmap + NN opponent training
-    heatmapTimer+=dt
+    heatmapTimer = heatmapTimer + dt
     if heatmapTimer>=Cfg.HEATMAP_UPDATE_RATE then
         heatmapTimer=0
         local myPos=GetPos(LocalPlayer)
@@ -2926,7 +2926,7 @@ RunService.Heartbeat:Connect(function(dt)
     end
 
     -- BAP update (every few frames)
-    BAPFrameCounter += 1
+    BAPFrameCounter = BAPFrameCounter + 1
     if BAPFrameCounter >= 4 then
         BAPFrameCounter = 0
         local myPos = GetPos(LocalPlayer)
@@ -2950,14 +2950,14 @@ RunService.Heartbeat:Connect(function(dt)
     if NNLbl then
         local totalSamples = DecisionNet.replayCount
         local oppSamples = 0
-        for _, net in pairs(NNRegistry) do oppSamples += net.replayCount end
+        for _, net in pairs(NNRegistry) do oppSamples = oppSamples +  net.replayCount end
         NNLbl.Text=string.format("NN: %d dec / %d opp", totalSamples, oppSamples)
         NNLbl.TextColor3 = totalSamples >= Cfg.NN_WARMUP
             and Color3.fromRGB(80,220,255)
             or  Color3.fromRGB(150,150,100)
     end
 
-    planTimer+=dt
+    planTimer = planTimer + dt
     if planTimer>=Cfg.PLAN_UPDATE_INTERVAL then
         planTimer=0
         if AutoPlayerEnabled then RunStrategicPlanner() end
@@ -2966,15 +2966,15 @@ RunService.Heartbeat:Connect(function(dt)
     if not AutoPlayerEnabled then return end
     SetAutoRotate(false)
 
-    targetTimer+=dt; if targetTimer>=Cfg.TARGET_UPDATE_RATE then targetTimer=0; UpdateTarget() end
-    loopTimer+=dt;   if loopTimer<Cfg.LOOP_RATE then return end; loopTimer=0
+    targetTimer = targetTimer + dt; if targetTimer>=Cfg.TARGET_UPDATE_RATE then targetTimer=0; UpdateTarget() end
+    loopTimer = loopTimer + dt;   if loopTimer<Cfg.LOOP_RATE then return end; loopTimer=0
 
     local char=LocalPlayer.Character; if not char then return end
     local hum=char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health<=0 then releaseAll(); return end
     local myPos=GetPos(LocalPlayer); if not myPos then return end
 
-    _openSpaceDirTimer+=Cfg.LOOP_RATE
+    _openSpaceDirTimer = _openSpaceDirTimer + Cfg.LOOP_RATE
     if _openSpaceDirTimer>=Cfg.OPEN_DIR_UPDATE_RATE then
         _openSpaceDirTimer=0
         RefreshOpenSpaceDir(myPos)
@@ -3031,7 +3031,7 @@ RunService.Heartbeat:Connect(function(dt)
         PathFollowing.active=false
     end
     if AntiStuckTimer>0 then
-        AntiStuckTimer-=Cfg.LOOP_RATE; MoveDir=AntiStuckDir; FaceDir=AntiStuckDir
+        AntiStuckTimer = AntiStuckTimer - Cfg.LOOP_RATE; MoveDir=AntiStuckDir; FaceDir=AntiStuckDir
         TryAiJump(myPos,AntiStuckDir); moveDir(MoveDir); return
     end
 
